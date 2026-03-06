@@ -66,6 +66,38 @@ const REQUIRED_VARIABLES: Record<string, string[]> = {
 
 // ── Result Types ─────────────────────────────────────────────────────────────
 
+export interface TrajectoryPoint {
+  year: number;
+  month: number;
+  age: number;
+  net_worth: number;
+  super_balance: number;
+  total_assets: number;
+  total_liabilities: number;
+  age_pension_annual: number;
+}
+
+export interface YearlyDetail {
+  financial_year: number;
+  age: number;
+  gross_income: number;
+  employment_income: number;
+  super_pension_income: number;
+  age_pension: number;
+  asset_income: number;
+  tax: number;
+  medicare_levy: number;
+  hecs_repayment: number;
+  net_income: number;
+  expenses: number;
+  loan_repayments: number;
+  net_cash_flow: number;
+  super_balance: number;
+  total_assets: number;
+  total_liabilities: number;
+  net_worth: number;
+}
+
 export interface ProjectionSummary {
   scenario_name: string;
   projection_period: string;
@@ -89,6 +121,8 @@ export interface ProjectionSummary {
   net_worth_growth: number;
   milestones: Array<{ year: number; month: number; event: string; amount?: number }>;
   net_worth_trajectory: Array<{ year: number; month: number; net_worth: number }>;
+  trajectory: TrajectoryPoint[];
+  yearly_detail: YearlyDetail[];
   warnings: string[];
 }
 
@@ -99,6 +133,7 @@ export interface ScenarioComparison {
   years_in_deficit: number;
   total_pension: number;
   depletion_age: number | null;
+  trajectory: TrajectoryPoint[];
 }
 
 export interface ComparisonResult {
@@ -156,6 +191,7 @@ export function compareScenarios(scenarios: unknown[]): ComparisonResult {
       years_in_deficit: Math.round(deficitMonths / 12),
       total_pension: totalPension,
       depletion_age: depletionAge,
+      trajectory: buildTrajectory(r),
     };
   });
 
@@ -208,14 +244,13 @@ export function createSummary(result: ProjectionResult): ProjectionSummary {
 
   const milestones = findMilestones(result);
 
-  // Sample net worth every 12 months for the trajectory
-  const trajectory: ProjectionSummary['net_worth_trajectory'] = [];
+  const legacyTrajectory: ProjectionSummary['net_worth_trajectory'] = [];
   for (let i = 0; i < snapshots.length; i += 12) {
     const s = snapshots[i];
-    trajectory.push({ year: s.year, month: s.month, net_worth: s.net_worth });
+    legacyTrajectory.push({ year: s.year, month: s.month, net_worth: s.net_worth });
   }
   if (snapshots.length > 1) {
-    trajectory.push({ year: last.year, month: last.month, net_worth: last.net_worth });
+    legacyTrajectory.push({ year: last.year, month: last.month, net_worth: last.net_worth });
   }
 
   return {
@@ -240,7 +275,9 @@ export function createSummary(result: ProjectionResult): ProjectionSummary {
     },
     net_worth_growth: last.net_worth - first.net_worth,
     milestones,
-    net_worth_trajectory: trajectory,
+    net_worth_trajectory: legacyTrajectory,
+    trajectory: buildTrajectory(result),
+    yearly_detail: buildYearlyDetail(result),
     warnings: result.warnings,
   };
 }
@@ -320,6 +357,125 @@ function emptySummary(result: ProjectionResult): ProjectionSummary {
     net_worth_growth: 0,
     milestones: [],
     net_worth_trajectory: [],
+    trajectory: [],
+    yearly_detail: [],
     warnings: result.warnings,
   };
+}
+
+// ── Trajectory & Yearly Detail Builders ──────────────────────────────────────
+
+function buildTrajectory(result: ProjectionResult): TrajectoryPoint[] {
+  const points: TrajectoryPoint[] = [];
+  const snaps = result.snapshots;
+
+  for (let i = 0; i < snaps.length; i += 12) {
+    const s = snaps[i];
+    const person = s.persons[0];
+
+    let pensionAnnual = 0;
+    const start = Math.max(0, i - 11);
+    for (let j = start; j <= i; j++) {
+      pensionAnnual += snaps[j].age_pension_monthly;
+    }
+
+    points.push({
+      year: s.year,
+      month: s.month,
+      age: person?.age ?? 0,
+      net_worth: s.net_worth,
+      super_balance: s.total_super,
+      total_assets: s.total_assets,
+      total_liabilities: s.total_liabilities,
+      age_pension_annual: pensionAnnual,
+    });
+  }
+
+  if (snaps.length > 1) {
+    const last = snaps[snaps.length - 1];
+    const prev = points[points.length - 1];
+    if (!prev || prev.year !== last.year || prev.month !== last.month) {
+      const start = Math.max(0, snaps.length - 12);
+      let pensionAnnual = 0;
+      for (let j = start; j < snaps.length; j++) {
+        pensionAnnual += snaps[j].age_pension_monthly;
+      }
+      points.push({
+        year: last.year,
+        month: last.month,
+        age: last.persons[0]?.age ?? 0,
+        net_worth: last.net_worth,
+        super_balance: last.total_super,
+        total_assets: last.total_assets,
+        total_liabilities: last.total_liabilities,
+        age_pension_annual: pensionAnnual,
+      });
+    }
+  }
+
+  return points;
+}
+
+function buildYearlyDetail(result: ProjectionResult): YearlyDetail[] {
+  const details: YearlyDetail[] = [];
+  const snaps = result.snapshots;
+
+  for (let fyStart = 0; fyStart < snaps.length; fyStart += 12) {
+    const fyEnd = Math.min(fyStart + 12, snaps.length);
+    const lastMonth = snaps[fyEnd - 1];
+    const person = lastMonth.persons[0];
+
+    let grossIncome = 0;
+    let employmentIncome = 0;
+    let superPensionIncome = 0;
+    let agePension = 0;
+    let assetIncome = 0;
+    let tax = 0;
+    let medicare = 0;
+    let hecs = 0;
+    let expenses = 0;
+    let loanRepayments = 0;
+    let netCashFlow = 0;
+
+    for (let i = fyStart; i < fyEnd; i++) {
+      const s = snaps[i];
+      grossIncome += s.total_gross_income;
+      employmentIncome += s.total_employment_income;
+      superPensionIncome += s.total_super_pension_income;
+      agePension += s.age_pension_monthly;
+      assetIncome += s.total_asset_income;
+      tax += s.total_tax;
+      expenses += s.total_expenses;
+      loanRepayments += s.total_loan_repayments;
+      netCashFlow += s.net_cash_flow;
+
+      for (const p of s.persons) {
+        medicare += p.medicare_levy;
+        hecs += p.hecs_repayment;
+      }
+    }
+
+    details.push({
+      financial_year: lastMonth.year,
+      age: person?.age ?? 0,
+      gross_income: grossIncome,
+      employment_income: employmentIncome,
+      super_pension_income: superPensionIncome,
+      age_pension: agePension,
+      asset_income: assetIncome,
+      tax,
+      medicare_levy: medicare,
+      hecs_repayment: hecs,
+      net_income: grossIncome - tax,
+      expenses,
+      loan_repayments: loanRepayments,
+      net_cash_flow: netCashFlow,
+      super_balance: lastMonth.total_super,
+      total_assets: lastMonth.total_assets,
+      total_liabilities: lastMonth.total_liabilities,
+      net_worth: lastMonth.net_worth,
+    });
+  }
+
+  return details;
 }

@@ -3,14 +3,28 @@
  * Section 6: Agent Specifications - Extended Output Schema
  */
 
-export interface ProjectionResult {
-  // Define based on your projection result structure
-  [key: string]: any
-}
+import type {
+  ProjectionSummary,
+  ComparisonResult,
+  TrajectoryPoint,
+  YearlyDetail,
+} from '@/engine/api'
 
-export interface CanvasConfig {
-  // Define based on your canvas configuration structure
-  [key: string]: any
+export type { ProjectionSummary, ComparisonResult, TrajectoryPoint, YearlyDetail }
+
+export type CanvasPanel =
+  | { type: 'projection_chart'; summary: ProjectionSummary; assumptions: string[] }
+  | { type: 'scenario_comparison'; comparison: ComparisonResult; assumptions: string[] }
+  | { type: 'fee_impact'; comparison: ComparisonResult }
+  | { type: 'tax_breakdown'; detail: YearlyDetail }
+  | { type: 'cash_flow'; detail: YearlyDetail }
+  | { type: 'balance_sheet'; summary: ProjectionSummary }
+  | { type: 'forecast_table'; summary: ProjectionSummary }
+  | { type: 'empty' }
+
+export interface CanvasState {
+  panels: CanvasPanel[]
+  profileCompleteness: number
 }
 
 export interface InputRequest {
@@ -34,8 +48,9 @@ export interface InputRequest {
 
 export interface AgentOutput {
   message: string
-  projection_result?: ProjectionResult
-  canvas_config?: CanvasConfig
+  projection_summary?: ProjectionSummary
+  comparison_result?: ComparisonResult
+  canvas_panels?: CanvasPanel[]
   assumptions?: string[]
   disclaimers?: string[]
   input_request?: InputRequest

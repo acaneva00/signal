@@ -7,7 +7,8 @@ import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Send } from 'lucide-react'
 import { StructuredInput } from '@/components/chat/StructuredInput'
-import type { InputRequest, StructuredResponse } from '@/types/agent'
+import { Canvas } from '@/components/canvas/Canvas'
+import type { InputRequest, StructuredResponse, ProjectionSummary, ComparisonResult } from '@/types/agent'
 
 type Message = {
   id: string
@@ -17,19 +18,42 @@ type Message = {
   input_request?: InputRequest
 }
 
+interface CanvasData {
+  projectionSummary: ProjectionSummary | null
+  comparisonResult: ComparisonResult | null
+  intent: string | null
+  assumptions: string[]
+  disclaimers: string[]
+}
+
+const EMPTY_CANVAS: CanvasData = {
+  projectionSummary: null,
+  comparisonResult: null,
+  intent: null,
+  assumptions: [],
+  disclaimers: [],
+}
+
+const PROFILE_FIELDS = [
+  'date_of_birth_year', 'income', 'super_balance', 'intended_retirement_age',
+  'expenses', 'relationship_status', 'is_homeowner', 'has_hecs_help_debt',
+  'hecs_help_balance', 'mortgage_balance', 'mortgage_rate', 'mortgage_repayment',
+  'assets', 'liabilities', 'super_fees',
+]
+
 export function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [answeredInputs, setAnsweredInputs] = useState<Set<string>>(new Set())
+  const [canvasData, setCanvasData] = useState<CanvasData>(EMPTY_CANVAS)
+  const [profileFieldCount, setProfileFieldCount] = useState(0)
   const scrollAreaRef = useRef<HTMLDivElement>(null)
 
-  // Load messages on mount
   useEffect(() => {
     loadMessages()
   }, [])
 
-  // Scroll to bottom when messages change
   useEffect(() => {
     if (scrollAreaRef.current) {
       const scrollContainer = scrollAreaRef.current.querySelector('[data-radix-scroll-area-viewport]')
@@ -58,23 +82,32 @@ export function ChatInterface() {
     setInput('')
     setIsLoading(true)
 
+    const optimisticMsg: Message = {
+      id: `temp-${Date.now()}`,
+      role: 'user',
+      content: userMessage,
+      created_at: new Date().toISOString(),
+    }
+    setMessages((prev) => [...prev, optimisticMsg])
+
     try {
-      const response = await fetch('/api/messages', {
+      const response = await fetch('/api/chat', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          role: 'user',
-          content: userMessage,
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: userMessage }),
       })
 
       if (response.ok) {
         const data = await response.json()
-        setMessages((prev) => [...prev, data.message])
+        handleChatResponse(data)
       } else {
-        console.error('Failed to send message')
+        const errorMsg: Message = {
+          id: `err-${Date.now()}`,
+          role: 'assistant',
+          content: 'Sorry, something went wrong. Please try again.',
+          created_at: new Date().toISOString(),
+        }
+        setMessages((prev) => [...prev, errorMsg])
       }
     } catch (error) {
       console.error('Error sending message:', error)
@@ -88,11 +121,9 @@ export function ChatInterface() {
     displayText: string,
     structuredValue: StructuredResponse
   ) => {
-    // Mark this input as answered
     setAnsweredInputs((prev) => new Set(prev).add(messageId))
     setIsLoading(true)
 
-    // Optimistically add user message bubble
     const optimisticMessage: Message = {
       id: `temp-${Date.now()}`,
       role: 'user',
@@ -102,21 +133,19 @@ export function ChatInterface() {
     setMessages((prev) => [...prev, optimisticMessage])
 
     try {
-      const response = await fetch('/api/messages', {
+      const response = await fetch('/api/chat', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          role: 'user',
-          content: displayText,
+          message: displayText,
           structured_response: structuredValue,
         }),
       })
 
       if (response.ok) {
-        // Reload all messages to get the assistant's response
-        await loadMessages()
+        const data = await response.json()
+        setProfileFieldCount((prev) => prev + 1)
+        handleChatResponse(data)
       } else {
         console.error('Failed to send structured input')
       }
@@ -127,6 +156,35 @@ export function ChatInterface() {
     }
   }
 
+  const handleChatResponse = (data: {
+    message: string
+    intent_classified?: string | null
+    projection_summary?: ProjectionSummary | null
+    comparison_result?: ComparisonResult | null
+    assumptions?: string[]
+    disclaimers?: string[]
+    input_request?: InputRequest | null
+  }) => {
+    const assistantMsg: Message = {
+      id: `ast-${Date.now()}`,
+      role: 'assistant',
+      content: data.message,
+      created_at: new Date().toISOString(),
+      input_request: data.input_request ?? undefined,
+    }
+    setMessages((prev) => [...prev, assistantMsg])
+
+    if (data.projection_summary || data.comparison_result) {
+      setCanvasData({
+        projectionSummary: data.projection_summary ?? null,
+        comparisonResult: data.comparison_result ?? null,
+        intent: data.intent_classified ?? null,
+        assumptions: data.assumptions ?? [],
+        disclaimers: data.disclaimers ?? [],
+      })
+    }
+  }
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -134,21 +192,21 @@ export function ChatInterface() {
     }
   }
 
-  // Check if there's an active structured input waiting for response
   const hasActiveStructuredInput = messages.some(
     (msg) => msg.role === 'assistant' && msg.input_request && !answeredInputs.has(msg.id)
   )
 
+  const profileCompleteness = Math.min(profileFieldCount / PROFILE_FIELDS.length, 1)
+
   return (
     <div className="flex h-full gap-4 p-6">
-      {/* Left Pane - Chat Messages */}
+      {/* Left Pane - Chat */}
       <Card className="flex flex-col w-[60%] h-full">
         <div className="border-b p-4">
           <h2 className="text-lg font-semibold text-slate-900">Conversation</h2>
           <p className="text-sm text-slate-600">Chat with your financial coach</p>
         </div>
 
-        {/* Messages Area */}
         <ScrollArea ref={scrollAreaRef} className="flex-1 p-4">
           <div className="space-y-4">
             {messages.length === 0 ? (
@@ -190,10 +248,9 @@ export function ChatInterface() {
                       </p>
                     </div>
                   </div>
-                  
-                  {/* Render StructuredInput if this is an assistant message with input_request */}
-                  {message.role === 'assistant' && 
-                   message.input_request && 
+
+                  {message.role === 'assistant' &&
+                   message.input_request &&
                    !answeredInputs.has(message.id) && (
                     <div className="flex justify-start">
                       <div className="max-w-[80%] w-full">
@@ -209,10 +266,21 @@ export function ChatInterface() {
                 </div>
               ))
             )}
+
+            {isLoading && (
+              <div className="flex justify-start">
+                <div className="bg-slate-100 rounded-lg px-4 py-2">
+                  <div className="flex gap-1">
+                    <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </ScrollArea>
 
-        {/* Input Area */}
         <div className="border-t p-4">
           <div className="flex gap-2">
             <Input
@@ -238,34 +306,25 @@ export function ChatInterface() {
         </div>
       </Card>
 
-      {/* Right Pane - Canvas Placeholder */}
-      <Card className="w-[40%] h-full bg-slate-50">
+      {/* Right Pane - Canvas */}
+      <Card className="w-[40%] h-full bg-slate-50 overflow-hidden">
         <div className="border-b p-4 bg-white">
           <h2 className="text-lg font-semibold text-slate-900">Canvas</h2>
-          <p className="text-sm text-slate-600">Visualizations will appear here</p>
+          <p className="text-sm text-slate-600">
+            {canvasData.projectionSummary || canvasData.comparisonResult
+              ? canvasData.projectionSummary?.scenario_name ?? 'Scenario Comparison'
+              : 'Visualisations will appear here'}
+          </p>
         </div>
-        <div className="flex items-center justify-center h-[calc(100%-4rem)] p-6">
-          <div className="text-center">
-            <div className="w-24 h-24 mx-auto mb-4 rounded-lg bg-slate-200 flex items-center justify-center">
-              <svg
-                className="w-12 h-12 text-slate-400"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01"
-                />
-              </svg>
-            </div>
-            <p className="text-slate-600 font-medium">Canvas Area</p>
-            <p className="text-sm text-slate-500 mt-1">
-              Interactive visualizations and projections will be displayed here
-            </p>
-          </div>
+        <div className="h-[calc(100%-4.5rem)]">
+          <Canvas
+            projectionSummary={canvasData.projectionSummary}
+            comparisonResult={canvasData.comparisonResult}
+            intent={canvasData.intent}
+            assumptions={canvasData.assumptions}
+            disclaimers={canvasData.disclaimers}
+            profileCompleteness={profileCompleteness}
+          />
         </div>
       </Card>
     </div>
