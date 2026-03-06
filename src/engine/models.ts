@@ -272,19 +272,47 @@ export const AssumptionsSchema = z.object({
 });
 export type Assumptions = z.infer<typeof AssumptionsSchema>;
 
-// ── Allocation Rules (NEW - PRD 8.6) ─────────────────────────────────────────
+// ── Allocation Rules (PRD 8.6) ────────────────────────────────────────────────
 
-export const AllocationRuleSchema = z.object({
-  priority: z.number().int(),
-  target: z.string(), // e.g., "asset:cash_account", "liability:home_loan", "super:person_1"
-  allocation_percentage: z.number().nullable().default(null), // if null, allocate remainder
-  max_amount: z.number().nullable().default(null), // optional cap
+export const SurplusRuleTypeEnum = z.enum([
+  "emergency_buffer",
+  "extra_debt_repayment",
+  "super_contribution",
+  "investment_contribution",
+  "remainder_to_cash",
+]);
+export type SurplusRuleType = z.infer<typeof SurplusRuleTypeEnum>;
+
+export const DebtStrategyEnum = z.enum(["avalanche", "snowball"]);
+export type DebtStrategy = z.infer<typeof DebtStrategyEnum>;
+
+export const DrawdownRuleTypeEnum = z.enum([
+  "cash",
+  "fixed_interest",
+  "shares",
+  "super",
+  "property",
+]);
+export type DrawdownRuleType = z.infer<typeof DrawdownRuleTypeEnum>;
+
+export const SurplusRuleSchema = z.object({
+  type: SurplusRuleTypeEnum,
+  target_amount: z.number().optional(),
+  monthly_amount: z.number().optional(),
+  target_asset_id: z.string().optional(),
+  strategy: DebtStrategyEnum.optional(),
 });
-export type AllocationRule = z.infer<typeof AllocationRuleSchema>;
+export type SurplusRule = z.infer<typeof SurplusRuleSchema>;
+
+export const DrawdownRuleSchema = z.object({
+  type: DrawdownRuleTypeEnum,
+  asset_id: z.string().optional(),
+});
+export type DrawdownRule = z.infer<typeof DrawdownRuleSchema>;
 
 export const AllocationRulesSchema = z.object({
-  surplus: z.array(AllocationRuleSchema).default([]), // rules for surplus allocation
-  drawdown: z.array(AllocationRuleSchema).default([]), // rules for deficit drawdown priority
+  surplus_priority: z.array(SurplusRuleSchema).default([]),
+  drawdown_priority: z.array(DrawdownRuleSchema).default([]),
 });
 export type AllocationRules = z.infer<typeof AllocationRulesSchema>;
 
@@ -404,7 +432,8 @@ export const schemas = {
   Liability: LiabilitySchema,
   ScheduledCashFlow: ScheduledCashFlowSchema,
   Assumptions: AssumptionsSchema,
-  AllocationRule: AllocationRuleSchema,
+  SurplusRule: SurplusRuleSchema,
+  DrawdownRule: DrawdownRuleSchema,
   AllocationRules: AllocationRulesSchema,
   Scenario: ScenarioSchema,
   PersonMonthDetail: PersonMonthDetailSchema,

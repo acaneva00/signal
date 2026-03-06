@@ -13,7 +13,8 @@ describe('models schemas', () => {
     expect(schemas.Liability).toBeDefined();
     expect(schemas.ScheduledCashFlow).toBeDefined();
     expect(schemas.Assumptions).toBeDefined();
-    expect(schemas.AllocationRule).toBeDefined();
+    expect(schemas.SurplusRule).toBeDefined();
+    expect(schemas.DrawdownRule).toBeDefined();
     expect(schemas.AllocationRules).toBeDefined();
     expect(schemas.Scenario).toBeDefined();
     expect(schemas.PersonMonthDetail).toBeDefined();
