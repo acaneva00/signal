@@ -6,18 +6,22 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Send } from 'lucide-react'
+import { StructuredInput } from '@/components/chat/StructuredInput'
+import type { InputRequest, StructuredResponse } from '@/types/agent'
 
 type Message = {
   id: string
   role: 'user' | 'assistant'
   content: string
   created_at: string
+  input_request?: InputRequest
 }
 
 export function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  const [answeredInputs, setAnsweredInputs] = useState<Set<string>>(new Set())
   const scrollAreaRef = useRef<HTMLDivElement>(null)
 
   // Load messages on mount
@@ -79,12 +83,61 @@ export function ChatInterface() {
     }
   }
 
+  const handleStructuredInput = async (
+    messageId: string,
+    displayText: string,
+    structuredValue: StructuredResponse
+  ) => {
+    // Mark this input as answered
+    setAnsweredInputs((prev) => new Set(prev).add(messageId))
+    setIsLoading(true)
+
+    // Optimistically add user message bubble
+    const optimisticMessage: Message = {
+      id: `temp-${Date.now()}`,
+      role: 'user',
+      content: displayText,
+      created_at: new Date().toISOString(),
+    }
+    setMessages((prev) => [...prev, optimisticMessage])
+
+    try {
+      const response = await fetch('/api/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          role: 'user',
+          content: displayText,
+          structured_response: structuredValue,
+        }),
+      })
+
+      if (response.ok) {
+        // Reload all messages to get the assistant's response
+        await loadMessages()
+      } else {
+        console.error('Failed to send structured input')
+      }
+    } catch (error) {
+      console.error('Error sending structured input:', error)
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       sendMessage()
     }
   }
+
+  // Check if there's an active structured input waiting for response
+  const hasActiveStructuredInput = messages.some(
+    (msg) => msg.role === 'assistant' && msg.input_request && !answeredInputs.has(msg.id)
+  )
 
   return (
     <div className="flex h-full gap-4 p-6">
@@ -109,33 +162,50 @@ export function ChatInterface() {
               </div>
             ) : (
               messages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`flex ${
-                    message.role === 'user' ? 'justify-end' : 'justify-start'
-                  }`}
-                >
+                <div key={message.id}>
                   <div
-                    className={`max-w-[80%] rounded-lg px-4 py-2 ${
-                      message.role === 'user'
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-slate-100 text-slate-900'
+                    className={`flex ${
+                      message.role === 'user' ? 'justify-end' : 'justify-start'
                     }`}
                   >
-                    <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-                    <p
-                      className={`text-xs mt-1 ${
+                    <div
+                      className={`max-w-[80%] rounded-lg px-4 py-2 ${
                         message.role === 'user'
-                          ? 'text-blue-100'
-                          : 'text-slate-500'
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-slate-100 text-slate-900'
                       }`}
                     >
-                      {new Date(message.created_at).toLocaleTimeString([], {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })}
-                    </p>
+                      <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+                      <p
+                        className={`text-xs mt-1 ${
+                          message.role === 'user'
+                            ? 'text-blue-100'
+                            : 'text-slate-500'
+                        }`}
+                      >
+                        {new Date(message.created_at).toLocaleTimeString([], {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </p>
+                    </div>
                   </div>
+                  
+                  {/* Render StructuredInput if this is an assistant message with input_request */}
+                  {message.role === 'assistant' && 
+                   message.input_request && 
+                   !answeredInputs.has(message.id) && (
+                    <div className="flex justify-start">
+                      <div className="max-w-[80%] w-full">
+                        <StructuredInput
+                          inputRequest={message.input_request}
+                          onSelect={(displayText, structuredValue) =>
+                            handleStructuredInput(message.id, displayText, structuredValue)
+                          }
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
               ))
             )}
@@ -149,13 +219,17 @@ export function ChatInterface() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Type your message..."
-              disabled={isLoading}
+              placeholder={
+                hasActiveStructuredInput
+                  ? 'Please respond to the question above...'
+                  : 'Type your message...'
+              }
+              disabled={isLoading || hasActiveStructuredInput}
               className="flex-1"
             />
             <Button
               onClick={sendMessage}
-              disabled={!input.trim() || isLoading}
+              disabled={!input.trim() || isLoading || hasActiveStructuredInput}
               size="icon"
             >
               <Send className="h-4 w-4" />

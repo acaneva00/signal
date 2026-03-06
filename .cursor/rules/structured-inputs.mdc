@@ -1,0 +1,118 @@
+---
+description: Use structured input requests for known financial profile fields
+alwaysApply: true
+---
+
+# Structured Input Requests
+
+When collecting information from users, check if the field matches a known structured input type. For known fields, reference the structured input system instead of asking free-text questions.
+
+## Known Structured Fields
+
+### Single Select Fields
+
+**age_range**
+- Options: 18–25 | 26–35 | 36–45 | 46–55 | 56–65 | 65+
+
+**employment_type**
+- Options: Full-time employed | Part-time/casual | Self-employed | Not working | Retired
+
+**income_band**
+- Options: Under $45K | $45K–$90K | $90K–$135K | $135K–$200K | $200K+
+
+**super_balance_band**
+- Options: Under $50K | $50K–$150K | $150K–$400K | $400K–$800K | $800K+ | No idea
+
+**housing_status**
+- Options: Own (with mortgage) | Own (outright) | Rent | Living with family | Other
+
+**relationship_status**
+- Options: Single | Partnered/de facto | Married | Separated/divorced
+
+**dependants_count**
+- Options: None | 1 | 2 | 3 | 4+
+
+**risk_comfort**
+- Options: Conservative | Balanced | Growth | Aggressive
+
+### Multi-Select Fields
+
+**financial_interests**
+- Options: Retirement planning | Tax optimisation | Investing | Debt management | Budgeting | Super
+
+### Numeric Input Fields
+
+**annual_income**
+- Range: $0–$500,000 | Step: $5,000 | Format: currency
+
+**super_balance**
+- Range: $0–$3,000,000 | Step: $10,000 | Format: currency
+
+**mortgage_balance**
+- Range: $0–$3,000,000 | Step: $10,000 | Format: currency
+
+**property_value**
+- Range: $0–$5,000,000 | Step: $25,000 | Format: currency
+
+## When to Use
+
+✅ **Use structured inputs for:**
+- Any field listed above
+- When you need precise, validated data
+- When data will be stored in financial_profiles
+
+❌ **Use free text for:**
+- Open-ended questions
+- Unknown/custom fields
+- Exploratory conversations
+
+## Format
+
+When mentioning that a structured input should be used, describe it like this:
+
+**For single_select:**
+```
+{ 
+  type: 'single_select', 
+  options: [{ label: 'Display text', value: 'machine_value' }], 
+  field: 'field_name', 
+  required: true 
+}
+```
+
+**For multi_select:**
+```
+{ 
+  type: 'multi_select', 
+  options: [{ label: 'Display text', value: 'machine_value' }], 
+  field: 'field_name', 
+  required: false 
+}
+```
+
+**For numeric_input:**
+```
+{ 
+  type: 'numeric_input', 
+  range: { min: 0, max: 1000000, step: 1000, default: 50000, format: 'currency' }, 
+  field: 'field_name', 
+  required: true 
+}
+```
+
+## Examples
+
+❌ **Don't say:** "What's your age range?"
+
+✅ **Instead say:** "I need to collect your age range. The frontend should display this as a structured input: `{ type: 'single_select', options: [...age ranges...], field: 'age_range', required: true }`"
+
+❌ **Don't say:** "How much is your annual income?"
+
+✅ **Instead say:** "I need to collect your annual income. This should use a numeric input with range $0-$500,000 in $5,000 increments: `{ type: 'numeric_input', range: { min: 0, max: 500000, step: 5000, default: 75000, format: 'currency' }, field: 'annual_income', required: true }`"
+
+## Important Notes
+
+- When a precise value has already been collected (e.g., annual_income = $112,500), use the exact value instead of falling back to the band selector
+- Structured inputs automatically update the user's financial_profiles.profile_data
+- All structured inputs are defined in `src/types/agent.ts`
+- Full documentation is in `docs/API_STRUCTURED_INPUTS.md`
