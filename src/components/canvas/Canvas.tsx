@@ -47,23 +47,20 @@ export function Canvas({
       {!hasContent ? (
         <EmptyCanvas />
       ) : (
-        <ScrollArea className="flex-1">
-          <div className="p-4 space-y-5">
-            {/* Scenario Comparison (dual line) */}
+        <ScrollArea className="flex-1 min-h-0">
+          <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 20 }}>
             {hasComparison && !showFeeImpact && (
               <ScenarioComparisonChart comparison={comparisonResult!} />
             )}
 
-            {/* Fee Impact Bar Chart */}
             {showFeeImpact && (
               <FeeImpactBarChart comparison={comparisonResult!} />
             )}
 
-            {/* Primary Projection Line Chart */}
             {hasProjection && !hasComparison && (
               <>
                 <div>
-                  <h3 className="text-sm font-semibold text-slate-700 mb-2">
+                  <h3 style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 8 }}>
                     Projected Super Balance
                   </h3>
                   <ProjectionLineChart
@@ -78,31 +75,26 @@ export function Canvas({
               </>
             )}
 
-            {/* Tax Breakdown Waterfall */}
             {showTaxWaterfall && projectionSummary!.yearly_detail[0] && (
               <TaxBreakdownWaterfall detail={projectionSummary!.yearly_detail[0]} />
             )}
 
-            {/* Cash Flow Waterfall */}
             {showCashFlow && projectionSummary!.yearly_detail[0] && (
               <CashFlowWaterfall detail={projectionSummary!.yearly_detail[0]} />
             )}
 
-            {/* Balance Sheet Cards */}
             {showBalanceSheet && (
               <BalanceSheetCards summary={projectionSummary!} />
             )}
 
-            {/* Forecast Table */}
             {showForecastTable && (
               <ForecastTable summary={projectionSummary!} />
             )}
 
-            {/* Disclaimers */}
             {disclaimers.length > 0 && (
-              <div className="pt-3 border-t border-slate-100">
+              <div style={{ paddingTop: 12, borderTop: '1px solid var(--color-border)' }}>
                 {disclaimers.map((d, i) => (
-                  <p key={i} className="text-xs text-slate-400 italic">
+                  <p key={i} style={{ fontSize: 11, color: 'var(--color-text-muted)', fontStyle: 'italic', margin: '2px 0' }}>
                     {d}
                   </p>
                 ))}

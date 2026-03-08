@@ -4,7 +4,6 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { MessageSquare, User, Settings, LogOut } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
-import { Button } from '@/components/ui/button'
 
 const navigation = [
   { name: 'Chat', href: '/chat', icon: MessageSquare },
@@ -12,7 +11,27 @@ const navigation = [
   { name: 'Settings', href: '/settings', icon: Settings },
 ]
 
-export function Sidebar() {
+function SignalIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="signal-bar-grad" x1="0" y1="18" x2="18" y2="0">
+          <stop offset="0%" stopColor="#1A2744" />
+          <stop offset="100%" stopColor="#4F8EF7" />
+        </linearGradient>
+      </defs>
+      <rect x="1" y="11" width="3.5" height="6" rx="1" fill="url(#signal-bar-grad)" />
+      <rect x="7.25" y="6" width="3.5" height="11" rx="1" fill="url(#signal-bar-grad)" />
+      <rect x="13.5" y="1" width="3.5" height="16" rx="1" fill="url(#signal-bar-grad)" />
+    </svg>
+  )
+}
+
+interface SidebarProps {
+  userEmail?: string | null
+}
+
+export function Sidebar({ userEmail }: SidebarProps) {
   const pathname = usePathname()
   const router = useRouter()
 
@@ -23,44 +42,145 @@ export function Sidebar() {
     router.refresh()
   }
 
+  const initials = userEmail
+    ? userEmail.charAt(0).toUpperCase()
+    : '?'
+
   return (
-    <div className="flex w-64 flex-col border-r border-slate-200 bg-white">
+    <div
+      className="flex flex-col h-full"
+      style={{
+        width: 220,
+        background: 'var(--color-bg-surface)',
+        borderRight: '1px solid var(--color-border)',
+      }}
+    >
       {/* Logo */}
-      <div className="flex h-16 items-center border-b border-slate-200 px-6">
-        <h1 className="text-xl font-bold text-slate-900">Signal</h1>
+      <div className="flex items-center gap-2.5 px-5 py-5">
+        <SignalIcon />
+        <span
+          style={{
+            fontSize: 15,
+            fontWeight: 600,
+            color: 'var(--color-text-primary)',
+            letterSpacing: '-0.01em',
+          }}
+        >
+          Signal
+        </span>
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 space-y-1 px-3 py-4">
+      <nav className="flex-1 px-3 space-y-0.5">
         {navigation.map((item) => {
           const isActive = pathname?.startsWith(item.href)
           return (
             <Link
               key={item.name}
               href={item.href}
-              className={`flex items-center rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                isActive
-                  ? 'bg-slate-100 text-slate-900'
-                  : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
-              }`}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                height: 40,
+                padding: '0 12px',
+                borderRadius: 'var(--radius-md)',
+                fontSize: 14,
+                fontWeight: 500,
+                color: isActive ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+                background: isActive ? 'var(--color-bg-elevated)' : 'transparent',
+                borderLeft: isActive ? '2px solid var(--color-accent-primary)' : '2px solid transparent',
+                transition: 'all 150ms ease',
+                textDecoration: 'none',
+              }}
+              onMouseEnter={(e) => {
+                if (!isActive) {
+                  e.currentTarget.style.background = 'var(--color-bg-elevated)'
+                  e.currentTarget.style.color = 'var(--color-text-primary)'
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (!isActive) {
+                  e.currentTarget.style.background = 'transparent'
+                  e.currentTarget.style.color = 'var(--color-text-secondary)'
+                }
+              }}
             >
-              <item.icon className="mr-3 h-5 w-5" />
+              <item.icon style={{ width: 16, height: 16, flexShrink: 0 }} />
               {item.name}
             </Link>
           )
         })}
       </nav>
 
-      {/* Sign out button */}
-      <div className="border-t border-slate-200 p-3">
-        <Button
-          variant="ghost"
-          className="w-full justify-start text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-          onClick={handleSignOut}
+      {/* User section */}
+      <div
+        style={{
+          borderTop: '1px solid var(--color-border)',
+          padding: '12px 16px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+        }}
+      >
+        <div
+          style={{
+            width: 28,
+            height: 28,
+            borderRadius: '50%',
+            background: 'linear-gradient(135deg, #4F8EF7, #7C6AF7)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: 11,
+            fontWeight: 600,
+            color: 'white',
+            flexShrink: 0,
+          }}
         >
-          <LogOut className="mr-3 h-5 w-5" />
-          Sign out
-        </Button>
+          {initials}
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div
+            style={{
+              fontSize: 11,
+              color: 'var(--color-text-muted)',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {userEmail || 'User'}
+          </div>
+        </div>
+        <button
+          onClick={handleSignOut}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: 28,
+            height: 28,
+            borderRadius: 'var(--radius-sm)',
+            color: 'var(--color-text-muted)',
+            background: 'transparent',
+            border: 'none',
+            cursor: 'pointer',
+            transition: 'all 150ms ease',
+            flexShrink: 0,
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = 'var(--color-text-secondary)'
+            e.currentTarget.style.background = 'var(--color-bg-elevated)'
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = 'var(--color-text-muted)'
+            e.currentTarget.style.background = 'transparent'
+          }}
+          title="Sign out"
+        >
+          <LogOut style={{ width: 14, height: 14 }} />
+        </button>
       </div>
     </div>
   )

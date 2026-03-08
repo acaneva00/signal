@@ -12,7 +12,7 @@ const QUESTIONS = {
   age_range: {
     order: 1,
     text: "Hey! I'm Signal — your financial companion. To get started, how old are you?",
-    type: 'single_select' as const,
+    type: 'chips' as const,
     options: [
       { label: '18–25', value: '18-25' },
       { label: '26–35', value: '26-35' },
@@ -28,7 +28,7 @@ const QUESTIONS = {
   employment_type: {
     order: 2,
     text: "Nice. And what's your work situation?",
-    type: 'single_select' as const,
+    type: 'chips' as const,
     options: [
       { label: 'Full-time employed', value: 'full_time' },
       { label: 'Part-time/casual', value: 'part_time' },
@@ -43,7 +43,7 @@ const QUESTIONS = {
   income_band: {
     order: 3,
     text: "Roughly what's your annual income before tax?",
-    type: 'single_select' as const,
+    type: 'chips' as const,
     options: [
       { label: 'Under $45K', value: 'under_45k' },
       { label: '$45K–$90K', value: '45k_90k' },
@@ -58,7 +58,7 @@ const QUESTIONS = {
   super_balance_band: {
     order: 4,
     text: "Do you know roughly what your super balance is?",
-    type: 'single_select' as const,
+    type: 'chips' as const,
     options: [
       { label: 'Under $50K', value: 'under_50k' },
       { label: '$50K–$150K', value: '50k_150k' },
@@ -117,38 +117,30 @@ function getNextQuestion(sessionData: Record<string, any>): {
 
 // Get acknowledgement for a response
 function getAcknowledgement(field: string, value: string): string {
-  const question = QUESTIONS[field as keyof typeof QUESTIONS]
-  
-  if ('conditionalAcknowledgement' in question && question.conditionalAcknowledgement) {
+  const question = QUESTIONS[field as keyof typeof QUESTIONS] as Record<string, any>
+
+  if (question.conditionalAcknowledgement) {
     const index = question.conditionalAcknowledgement(value)
     return question.acknowledgements[index]
   }
-  
+
   if (question.acknowledgements) {
     const index = Math.floor(Math.random() * question.acknowledgements.length)
     return question.acknowledgements[index]
   }
-  
+
   return "Thanks!"
 }
 
-// Create InputRequest for a question
-function createInputRequest(field: string, question: any): InputRequest {
-  if (question.type === 'free_text') {
-    return {
-      type: 'single_select',
-      field,
-      required: true,
-      allow_free_text: true,
-      options: [],
-    }
-  }
-  
+// Create InputRequest for a question (returns null for free-text fields)
+function createInputRequest(field: string, question: any): InputRequest | null {
+  if (question.type === 'free_text') return null
+
   return {
     type: question.type,
     field,
     required: true,
-    options: question.options.map((opt: any) => ({
+    options: question.options?.map((opt: any) => ({
       label: opt.label,
       value: opt.value,
     })),
@@ -285,7 +277,7 @@ export async function POST(request: Request) {
           id: crypto.randomUUID(),
           role: 'assistant',
           content: QUESTIONS.age_range.text,
-          input_request: inputRequest,
+          ...(inputRequest && { input_request: inputRequest }),
           created_at: new Date().toISOString(),
         },
       })
@@ -403,7 +395,7 @@ export async function POST(request: Request) {
         id: crypto.randomUUID(),
         role: 'assistant',
         content: `${acknowledgement}\n\n${nextQuestion.question.text}`,
-        input_request: inputRequest,
+        ...(inputRequest && { input_request: inputRequest }),
         created_at: new Date().toISOString(),
       },
     })

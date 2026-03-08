@@ -91,6 +91,7 @@ function makeSuperFund(overrides: Partial<SuperFund> & { person_id: string }): S
     balance: overrides.balance ?? 0,
     phase: overrides.phase ?? 'accumulation',
     investment_return: overrides.investment_return ?? 0.07,
+    retirement_investment_return: overrides.retirement_investment_return ?? 0.05,
     admin_fee_flat: overrides.admin_fee_flat ?? 0,
     admin_fee_percent: overrides.admin_fee_percent ?? 0,
     insurance_premium: overrides.insurance_premium ?? 0,

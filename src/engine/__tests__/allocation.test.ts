@@ -399,12 +399,73 @@ describe('processDeficit', () => {
 
     expect(result.actions).toHaveLength(1);
     expect(result.actions[0].amount).toBe(500);
+    expect(result.super_drawdowns).toHaveLength(0);
+  });
+
+  it('draws from super funds when accessible and other assets exhausted', () => {
+    const assets = [
+      makeAsset({ id: 'savings', asset_class: 'cash', current_value: 1_000 }),
+    ];
+    const rules: DrawdownRule[] = [
+      { type: 'cash' },
+      { type: 'super' },
+    ];
+
+    const result = processDeficit(5_000, rules, assets, [], {
+      superAccessible: true,
+      superFunds: [{ person_id: 'p1', balance: 200_000 }],
+    });
+
+    expect(result.actions).toHaveLength(2);
+    expect(result.actions[0]).toEqual({
+      action: 'draw_cash',
+      source_id: 'savings',
+      amount: 1_000,
+    });
+    expect(result.actions[1]).toEqual({
+      action: 'draw_super',
+      source_id: 'p1',
+      amount: 4_000,
+    });
+    expect(result.super_drawdowns).toHaveLength(1);
+    expect(result.super_drawdowns[0]).toEqual({ person_id: 'p1', amount: 4_000 });
+  });
+
+  it('draws from multiple super funds in order', () => {
+    const assets: Asset[] = [];
+    const rules: DrawdownRule[] = [{ type: 'super' }];
+
+    const result = processDeficit(15_000, rules, assets, [], {
+      superAccessible: true,
+      superFunds: [
+        { person_id: 'p1', balance: 10_000 },
+        { person_id: 'p2', balance: 50_000 },
+      ],
+    });
+
+    expect(result.super_drawdowns).toHaveLength(2);
+    expect(result.super_drawdowns[0]).toEqual({ person_id: 'p1', amount: 10_000 });
+    expect(result.super_drawdowns[1]).toEqual({ person_id: 'p2', amount: 5_000 });
+  });
+
+  it('does not draw super when accessible but funds have zero balance', () => {
+    const assets: Asset[] = [];
+    const rules: DrawdownRule[] = [{ type: 'super' }];
+
+    const result = processDeficit(5_000, rules, assets, [], {
+      superAccessible: true,
+      superFunds: [{ person_id: 'p1', balance: 0 }],
+    });
+
+    expect(result.actions).toHaveLength(0);
+    expect(result.super_drawdowns).toHaveLength(0);
   });
 
   it('returns empty result for zero deficit', () => {
     const result = processDeficit(0, DEFAULT_DRAWDOWN_RULES, [], []);
     expect(result.actions).toHaveLength(0);
     expect(result.cgt_events).toHaveLength(0);
+    expect(result.super_drawdowns).toHaveLength(0);
   });
 
   it('draws through multiple asset types in priority order', () => {

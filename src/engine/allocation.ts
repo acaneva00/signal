@@ -45,9 +45,15 @@ export interface CGTEvent {
   net_gain: number;
 }
 
+export interface SuperDrawdown {
+  person_id: string;
+  amount: number;
+}
+
 export interface DeficitResult {
   actions: DrawdownAction[];
   cgt_events: CGTEvent[];
+  super_drawdowns: SuperDrawdown[];
 }
 
 // ── Default Rules ────────────────────────────────────────────────────────────
@@ -216,6 +222,11 @@ const ASSET_CLASS_MAP: Record<string, string[]> = {
 
 const CGT_DISCOUNT = 0.5;
 
+export interface SuperFundSummary {
+  person_id: string;
+  balance: number;
+}
+
 /**
  * Draw from assets in priority order to cover a negative cash flow deficit.
  *
@@ -225,25 +236,48 @@ const CGT_DISCOUNT = 0.5;
  * from sale proceeds — only the net proceeds count toward covering the deficit.
  *
  * Super drawdown is skipped unless `superAccessible` is true (preservation
- * age reached and a condition of release is met).
+ * age reached and a condition of release is met). When accessible, draws
+ * additional amounts from super funds beyond the regular pension drawdown.
  */
 export function processDeficit(
   amount: number,
   rules: DrawdownRule[],
   assets: Asset[],
   liabilities: Liability[],
-  options: { superAccessible?: boolean } = {},
+  options: { superAccessible?: boolean; superFunds?: SuperFundSummary[] } = {},
 ): DeficitResult {
   const actions: DrawdownAction[] = [];
   const cgt_events: CGTEvent[] = [];
+  const super_drawdowns: SuperDrawdown[] = [];
   let remaining = amount;
 
-  if (remaining <= 0) return { actions, cgt_events };
+  if (remaining <= 0) return { actions, cgt_events, super_drawdowns };
 
   for (const rule of rules) {
     if (remaining <= 0) break;
 
     if (rule.type === 'super' && !options.superAccessible) continue;
+
+    if (rule.type === 'super') {
+      const funds = options.superFunds ?? [];
+      for (const fund of funds) {
+        if (remaining <= 0) break;
+        if (fund.balance <= 0) continue;
+
+        const drawAmount = Math.min(remaining, fund.balance);
+        actions.push({
+          action: 'draw_super',
+          source_id: fund.person_id,
+          amount: drawAmount,
+        });
+        super_drawdowns.push({
+          person_id: fund.person_id,
+          amount: drawAmount,
+        });
+        remaining -= drawAmount;
+      }
+      continue;
+    }
 
     const candidates = findCandidateAssets(rule, assets);
 
@@ -286,7 +320,7 @@ export function processDeficit(
     }
   }
 
-  return { actions, cgt_events };
+  return { actions, cgt_events, super_drawdowns };
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

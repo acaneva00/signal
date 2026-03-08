@@ -1,295 +1,428 @@
 'use client'
 
-import { useState } from 'react'
-import { InputRequest, StructuredResponse } from '@/types/agent'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { cn } from '@/lib/utils'
+import { useState, useRef, useEffect, useCallback } from 'react'
+import type { InputRequest, StructuredResponse } from '@/types/agent'
 
 interface StructuredInputProps {
   inputRequest: InputRequest
   onSelect: (displayText: string, structuredValue: StructuredResponse) => void
 }
 
+function formatCurrency(value: number): string {
+  return '$' + value.toLocaleString('en-AU', { maximumFractionDigits: 0 })
+}
+
 export function StructuredInput({ inputRequest, onSelect }: StructuredInputProps) {
-  const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [numericValue, setNumericValue] = useState<number>(
-    inputRequest.range?.default ?? inputRequest.range?.min ?? 0
-  )
-  const [isSubmitted, setIsSubmitted] = useState(false)
+  if (inputRequest.type === 'numeric') return <NumericCard inputRequest={inputRequest} onSelect={onSelect} />
+  if (inputRequest.type === 'chips') return <ChipSelector inputRequest={inputRequest} onSelect={onSelect} />
+  if (inputRequest.type === 'segmented') return <SegmentedControl inputRequest={inputRequest} onSelect={onSelect} />
+  return null
+}
 
-  const handleSingleSelect = (option: { label: string; value: string }) => {
-    setIsSubmitted(true)
-    
-    const structuredValue: StructuredResponse = {
-      field: inputRequest.field,
-      value: option.value,
-      source: 'structured_input',
-      confidence: 1.0
+/* ── Pattern 1: Numeric Card ─────────────────────────────────────────────── */
+
+function NumericCard({ inputRequest, onSelect }: StructuredInputProps) {
+  const { format, min, max, label, hint, placeholder, field, required } = inputRequest
+  const [rawDigits, setRawDigits] = useState('')
+  const [isExiting, setIsExiting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const autoConfirmRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const confirmedRef = useRef(false)
+
+  useEffect(() => {
+    const t = setTimeout(() => inputRef.current?.focus(), 100)
+    return () => {
+      clearTimeout(t)
+      if (autoConfirmRef.current) clearTimeout(autoConfirmRef.current)
     }
-    
-    onSelect(option.label, structuredValue)
+  }, [])
+
+  const numericValue = (() => {
+    if (!rawDigits) return null
+    const n = parseFloat(rawDigits)
+    return isNaN(n) ? null : n
+  })()
+
+  const validationError = (() => {
+    if (numericValue === null) return null
+    if (min != null && numericValue < min) {
+      if (format === 'year') return `Year must be ${min} or later`
+      if (format === 'age') return `Must be at least ${min}`
+      if (format === 'currency') return `Minimum is ${formatCurrency(min)}`
+      return `Minimum is ${min}`
+    }
+    if (max != null && numericValue > max) {
+      if (format === 'year') return `Year must be ${max} or earlier`
+      if (format === 'age') return `Must be ${max} or less`
+      if (format === 'currency') return `Maximum is ${formatCurrency(max)}`
+      return `Maximum is ${max}`
+    }
+    return null
+  })()
+
+  const isValid = numericValue !== null && validationError === null
+
+  const doConfirm = useCallback((val: number) => {
+    if (confirmedRef.current) return
+    confirmedRef.current = true
+    if (autoConfirmRef.current) {
+      clearTimeout(autoConfirmRef.current)
+      autoConfirmRef.current = null
+    }
+    setIsExiting(true)
+    setTimeout(() => {
+      const display = format === 'currency' ? formatCurrency(val) : String(val)
+      onSelect(display, {
+        field,
+        value: val,
+        source: 'structured_input',
+        confidence: 1.0,
+      })
+    }, 150)
+  }, [field, format, onSelect])
+
+  const handleConfirm = () => {
+    if (numericValue === null) return
+    if (validationError) { setError(validationError); return }
+    if (autoConfirmRef.current) {
+      clearTimeout(autoConfirmRef.current)
+      autoConfirmRef.current = null
+    }
+    doConfirm(numericValue)
   }
 
-  const handleMultiSelectToggle = (value: string) => {
-    const newSelected = new Set(selected)
-    if (newSelected.has(value)) {
-      newSelected.delete(value)
-    } else {
-      newSelected.add(value)
+  const displayValue = (() => {
+    if (!rawDigits) return ''
+    if (format === 'currency') {
+      const n = parseInt(rawDigits, 10)
+      if (isNaN(n)) return rawDigits
+      return n === 0 ? '$0' : formatCurrency(n)
     }
-    setSelected(newSelected)
-  }
+    return rawDigits
+  })()
 
-  const handleMultiSelectConfirm = () => {
-    setIsSubmitted(true)
-    
-    const selectedOptions = inputRequest.options?.filter(opt => selected.has(opt.value)) ?? []
-    const displayText = selectedOptions.map(opt => opt.label).join(', ')
-    const values = selectedOptions.map(opt => opt.value)
-    
-    const structuredValue: StructuredResponse = {
-      field: inputRequest.field,
-      value: values,
-      source: 'structured_input',
-      confidence: 1.0
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value
+    setError(null)
+    if (autoConfirmRef.current) {
+      clearTimeout(autoConfirmRef.current)
+      autoConfirmRef.current = null
     }
-    
-    onSelect(displayText, structuredValue)
-  }
 
-  const handleNumericConfirm = () => {
-    setIsSubmitted(true)
-    
-    const formatValue = (val: number) => {
-      const format = inputRequest.range?.format ?? ''
-      if (format.includes('$')) {
-        return `$${val.toLocaleString()}`
+    if (format === 'currency') {
+      const stripped = val.replace(/[$,\s]/g, '')
+      const lower = stripped.toLowerCase()
+      if (lower.endsWith('k') || lower.endsWith('m')) {
+        const numPart = stripped.slice(0, -1).replace(/[^0-9.]/g, '')
+        const n = parseFloat(numPart)
+        if (!isNaN(n)) {
+          const resolved = lower.endsWith('k') ? Math.round(n * 1_000) : Math.round(n * 1_000_000)
+          setRawDigits(String(resolved))
+          return
+        }
       }
-      if (format.includes('%')) {
-        return `${val}%`
+      setRawDigits(stripped.replace(/[^0-9]/g, ''))
+      return
+    }
+
+    if (format === 'year') {
+      const digits = val.replace(/\D/g, '').slice(0, 4)
+      setRawDigits(digits)
+      if (digits.length === 4) {
+        const year = parseInt(digits, 10)
+        if (min != null && max != null && year >= min && year <= max) {
+          autoConfirmRef.current = setTimeout(() => doConfirm(year), 400)
+        }
       }
-      return val.toLocaleString()
+      return
     }
-    
-    const displayText = formatValue(numericValue)
-    
-    const structuredValue: StructuredResponse = {
-      field: inputRequest.field,
-      value: numericValue,
-      source: 'structured_input',
-      confidence: 1.0
+
+    if (format === 'age') {
+      const digits = val.replace(/\D/g, '').slice(0, 2)
+      setRawDigits(digits)
+      if (digits.length === 2) {
+        const age = parseInt(digits, 10)
+        if (min != null && max != null && age >= min && age <= max) {
+          autoConfirmRef.current = setTimeout(() => doConfirm(age), 400)
+        }
+      }
+      return
     }
-    
-    onSelect(displayText, structuredValue)
+
+    const cleaned = val.replace(/[^0-9.\-]/g, '')
+    const parts = cleaned.split('.')
+    setRawDigits(parts.length > 2 ? parts[0] + '.' + parts.slice(1).join('') : cleaned)
   }
 
-  const handleSkip = () => {
-    setIsSubmitted(true)
-    
-    const structuredValue: StructuredResponse = {
-      field: inputRequest.field,
-      value: null,
-      source: 'structured_input',
-      confidence: 0
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') { e.preventDefault(); handleConfirm() }
+    if (e.key === 'Escape' && !required) {
+      setIsExiting(true)
+      setTimeout(() => {
+        onSelect('(Skipped)', { field, value: null, source: 'structured_input', confidence: 0 } as StructuredResponse)
+      }, 150)
     }
-    
-    onSelect('(Skipped)', structuredValue)
   }
 
-  if (inputRequest.type === 'single_select' && inputRequest.options) {
-    return (
-      <div className="mt-4 mb-2">
-        <div className={cn(
-          "grid gap-2 grid-cols-1 md:grid-cols-2 lg:grid-cols-3",
-          isSubmitted && "pointer-events-none"
-        )}>
-          {inputRequest.options.map((option) => {
-            const isSelected = isSubmitted && selected.has(option.value)
-            const wasNotSelected = isSubmitted && !selected.has(option.value)
-            
-            return (
-              <button
-                key={option.value}
-                onClick={() => {
-                  setSelected(new Set([option.value]))
-                  handleSingleSelect(option)
-                }}
-                disabled={isSubmitted}
-                className={cn(
-                  "px-4 py-3 rounded-lg border-2 text-sm font-medium transition-all",
-                  "hover:shadow-md",
-                  !isSubmitted && "border-[#1A365D] bg-white text-slate-900 hover:bg-[#1A365D] hover:text-white",
-                  isSelected && "border-[#1A365D] bg-[#1A365D] text-white",
-                  wasNotSelected && "opacity-30 border-slate-300"
-                )}
-              >
-                {option.label}
-              </button>
-            )
-          })}
+  return (
+    <div style={{
+      opacity: isExiting ? 0 : 1,
+      transform: isExiting ? 'translateY(4px)' : 'translateY(0)',
+      transition: 'opacity 150ms ease, transform 150ms ease',
+    }}>
+      <div className="animate-numeric-card-in" style={{
+        background: 'var(--color-bg-surface)',
+        border: '1px solid var(--color-border-strong)',
+        borderRadius: 16,
+        padding: 16,
+        maxWidth: 400,
+        boxShadow: 'var(--shadow-card)',
+      }}>
+        <div style={{
+          fontSize: 10,
+          fontWeight: 600,
+          textTransform: 'uppercase',
+          letterSpacing: '0.08em',
+          color: 'var(--color-text-muted)',
+          marginBottom: 8,
+        }}>
+          {label || field.replace(/_/g, ' ')}
         </div>
-        
-        {!inputRequest.required && !isSubmitted && (
-          <button
-            onClick={handleSkip}
-            className="mt-3 text-xs text-slate-500 hover:text-slate-700 underline"
-          >
-            Skip
-          </button>
-        )}
-      </div>
-    )
-  }
 
-  if (inputRequest.type === 'multi_select' && inputRequest.options) {
-    return (
-      <div className="mt-4 mb-2">
-        <div className={cn(
-          "grid gap-2 grid-cols-1 md:grid-cols-2 lg:grid-cols-3",
-          isSubmitted && "pointer-events-none"
-        )}>
-          {inputRequest.options.map((option) => {
-            const isSelected = selected.has(option.value)
-            const wasNotSelected = isSubmitted && !selected.has(option.value)
-            
-            return (
-              <button
-                key={option.value}
-                onClick={() => handleMultiSelectToggle(option.value)}
-                disabled={isSubmitted}
-                className={cn(
-                  "px-4 py-3 rounded-lg border-2 text-sm font-medium transition-all",
-                  "flex items-center gap-2 hover:shadow-md",
-                  !isSubmitted && !isSelected && "border-[#1A365D] bg-white text-slate-900 hover:bg-[#1A365D] hover:text-white",
-                  !isSubmitted && isSelected && "border-[#1A365D] bg-[#1A365D] text-white",
-                  wasNotSelected && "opacity-30 border-slate-300",
-                  isSubmitted && isSelected && "border-[#1A365D] bg-[#1A365D] text-white"
-                )}
-              >
-                <div className={cn(
-                  "w-4 h-4 border-2 rounded flex items-center justify-center flex-shrink-0",
-                  isSelected && !isSubmitted && "border-white bg-white",
-                  isSelected && isSubmitted && "border-white bg-white",
-                  !isSelected && "border-[#1A365D]"
-                )}>
-                  {isSelected && (
-                    <svg className="w-3 h-3 text-[#1A365D]" viewBox="0 0 12 12" fill="none">
-                      <path
-                        d="M10 3L4.5 8.5L2 6"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                  )}
-                </div>
-                <span>{option.label}</span>
-              </button>
-            )
-          })}
-        </div>
-        
-        {!isSubmitted && selected.size > 0 && (
-          <Button
-            onClick={handleMultiSelectConfirm}
-            className="mt-4 w-full md:w-auto"
-          >
-            Confirm ({selected.size} selected)
-          </Button>
-        )}
-        
-        {!inputRequest.required && !isSubmitted && (
-          <button
-            onClick={handleSkip}
-            className="mt-3 text-xs text-slate-500 hover:text-slate-700 underline block"
-          >
-            Skip
-          </button>
-        )}
-      </div>
-    )
-  }
-
-  if (inputRequest.type === 'numeric_input' && inputRequest.range) {
-    const { min, max, step, format } = inputRequest.range
-    
-    return (
-      <div className={cn(
-        "mt-4 mb-2 p-4 border-2 border-[#1A365D] rounded-lg bg-white",
-        isSubmitted && "opacity-50 pointer-events-none"
-      )}>
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <label className="text-sm font-medium text-slate-900">
-              {format.includes('$') ? 'Amount' : 'Value'}
-            </label>
-            <span className="text-lg font-semibold text-[#1A365D]">
-              {format.includes('$') && '$'}
-              {numericValue.toLocaleString()}
-              {format.includes('%') && '%'}
-            </span>
-          </div>
-          
+        <div style={{ display: 'flex', alignItems: 'baseline' }}>
           <input
-            type="range"
-            min={min}
-            max={max}
-            step={step}
-            value={numericValue}
-            onChange={(e) => setNumericValue(Number(e.target.value))}
-            disabled={isSubmitted}
-            className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-[#1A365D]"
+            ref={inputRef}
+            type="text"
+            inputMode="numeric"
+            value={displayValue}
+            onChange={handleChange}
+            onKeyDown={handleKeyDown}
+            placeholder={placeholder}
+            autoComplete="off"
             style={{
-              background: `linear-gradient(to right, #1A365D 0%, #1A365D ${((numericValue - min) / (max - min)) * 100}%, #e2e8f0 ${((numericValue - min) / (max - min)) * 100}%, #e2e8f0 100%)`
+              width: '100%',
+              fontSize: 32,
+              fontWeight: 700,
+              fontFamily: 'Inter, system-ui, sans-serif',
+              fontVariantNumeric: 'tabular-nums',
+              color: 'var(--color-text-primary)',
+              background: 'transparent',
+              border: 'none',
+              outline: 'none',
+              padding: 0,
             }}
           />
-          
-          <div className="flex items-center gap-2">
-            <Input
-              type="number"
-              min={min}
-              max={max}
-              step={step}
-              value={numericValue}
-              onChange={(e) => setNumericValue(Number(e.target.value))}
-              disabled={isSubmitted}
-              className="flex-1"
-            />
-            <Button
-              onClick={handleNumericConfirm}
-              disabled={isSubmitted}
-            >
-              Confirm
-            </Button>
-          </div>
-          
-          <div className="flex justify-between text-xs text-slate-500">
-            <span>
-              {format.includes('$') && '$'}
-              {min.toLocaleString()}
-              {format.includes('%') && '%'}
+          {format === 'age' && rawDigits && (
+            <span style={{
+              fontSize: 16,
+              color: 'var(--color-text-muted)',
+              marginLeft: 6,
+              whiteSpace: 'nowrap',
+              flexShrink: 0,
+            }}>
+              years old
             </span>
-            <span>
-              {format.includes('$') && '$'}
-              {max.toLocaleString()}
-              {format.includes('%') && '%'}
-            </span>
-          </div>
+          )}
         </div>
-        
-        {!inputRequest.required && !isSubmitted && (
-          <button
-            onClick={handleSkip}
-            className="mt-3 text-xs text-slate-500 hover:text-slate-700 underline"
-          >
-            Skip
-          </button>
+
+        {error && (
+          <div style={{ fontSize: 11, color: 'var(--color-accent-danger)', marginTop: 4 }}>
+            {error}
+          </div>
         )}
+
+        <div style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginTop: 12,
+        }}>
+          <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
+            {hint || '\u00a0'}
+          </span>
+          <button
+            type="button"
+            onClick={handleConfirm}
+            disabled={!isValid}
+            style={{
+              height: 34,
+              padding: '0 16px',
+              background: isValid ? 'var(--color-accent-primary)' : 'var(--color-bg-elevated)',
+              color: isValid ? 'white' : 'var(--color-text-muted)',
+              fontSize: 12,
+              fontWeight: 600,
+              fontFamily: 'Inter, system-ui, sans-serif',
+              border: 'none',
+              borderRadius: 10,
+              cursor: isValid ? 'pointer' : 'default',
+              transition: 'all 150ms ease',
+              whiteSpace: 'nowrap',
+            }}
+            onMouseEnter={(e) => {
+              if (isValid) {
+                e.currentTarget.style.transform = 'translateY(-1px)'
+                e.currentTarget.style.boxShadow = 'var(--shadow-glow)'
+              }
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.transform = 'translateY(0)'
+              e.currentTarget.style.boxShadow = 'none'
+            }}
+          >
+            Confirm →
+          </button>
+        </div>
       </div>
-    )
+    </div>
+  )
+}
+
+/* ── Pattern 2: Chip Selector ────────────────────────────────────────────── */
+
+function ChipSelector({ inputRequest, onSelect }: StructuredInputProps) {
+  const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
+  const [isExiting, setIsExiting] = useState(false)
+  const options = inputRequest.options || []
+
+  const handleSelect = (option: { label: string; value: string }, idx: number) => {
+    if (selectedIdx !== null) return
+    setSelectedIdx(idx)
+    setTimeout(() => {
+      setIsExiting(true)
+      setTimeout(() => {
+        onSelect(option.label, {
+          field: inputRequest.field,
+          value: option.value,
+          source: 'structured_input',
+          confidence: 1.0,
+        })
+      }, 150)
+    }, 200)
   }
 
-  return null
+  return (
+    <div style={{
+      padding: '4px 0 8px 0',
+      opacity: isExiting ? 0 : 1,
+      transition: 'opacity 150ms ease',
+    }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        {options.map((opt, i) => {
+          const isSelected = selectedIdx === i
+          return (
+            <button
+              type="button"
+              key={opt.value}
+              onClick={() => handleSelect(opt, i)}
+              disabled={selectedIdx !== null}
+              className="animate-chip-in"
+              style={{
+                animationDelay: `${i * 60}ms`,
+                height: 36,
+                padding: '0 16px',
+                background: isSelected ? 'var(--color-accent-primary)' : 'var(--color-bg-elevated)',
+                border: isSelected ? '1px solid transparent' : '1px solid var(--color-border-strong)',
+                borderRadius: 18,
+                fontSize: 13,
+                fontWeight: 500,
+                fontFamily: 'Inter, system-ui, sans-serif',
+                color: isSelected ? 'white' : 'var(--color-text-primary)',
+                cursor: selectedIdx !== null ? 'default' : 'pointer',
+                transition: 'background 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms ease',
+                whiteSpace: 'nowrap',
+              }}
+              onMouseEnter={(e) => {
+                if (selectedIdx === null) {
+                  e.currentTarget.style.background = 'var(--color-bg-surface)'
+                  e.currentTarget.style.borderColor = 'var(--color-accent-primary)'
+                  e.currentTarget.style.color = 'var(--color-accent-primary)'
+                  e.currentTarget.style.transform = 'translateY(-1px)'
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (selectedIdx === null) {
+                  e.currentTarget.style.background = 'var(--color-bg-elevated)'
+                  e.currentTarget.style.borderColor = 'var(--color-border-strong)'
+                  e.currentTarget.style.color = 'var(--color-text-primary)'
+                  e.currentTarget.style.transform = 'translateY(0)'
+                }
+              }}
+            >
+              {opt.label}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+/* ── Pattern 3: Segmented Control ────────────────────────────────────────── */
+
+function SegmentedControl({ inputRequest, onSelect }: StructuredInputProps) {
+  const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
+  const [isExiting, setIsExiting] = useState(false)
+  const options = inputRequest.options || []
+
+  const handleSelect = (option: { label: string; value: string }, idx: number) => {
+    if (selectedIdx !== null) return
+    setSelectedIdx(idx)
+    setTimeout(() => {
+      setIsExiting(true)
+      setTimeout(() => {
+        onSelect(option.label, {
+          field: inputRequest.field,
+          value: option.value,
+          source: 'structured_input',
+          confidence: 1.0,
+        })
+      }, 150)
+    }, 200)
+  }
+
+  return (
+    <div style={{
+      padding: '4px 0 8px 0',
+      opacity: isExiting ? 0 : 1,
+      transition: 'opacity 150ms ease',
+    }}>
+      <div className="animate-numeric-card-in" style={{
+        display: 'inline-flex',
+        background: 'var(--color-bg-elevated)',
+        border: '1px solid var(--color-border)',
+        borderRadius: 12,
+        padding: 3,
+      }}>
+        {options.map((opt, i) => {
+          const isActive = selectedIdx === i
+          return (
+            <button
+              type="button"
+              key={opt.value}
+              onClick={() => handleSelect(opt, i)}
+              disabled={selectedIdx !== null}
+              style={{
+                height: 32,
+                padding: '0 20px',
+                borderRadius: 10,
+                fontSize: 13,
+                fontWeight: 500,
+                fontFamily: 'Inter, system-ui, sans-serif',
+                color: isActive ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+                background: isActive ? 'var(--color-bg-surface)' : 'transparent',
+                border: 'none',
+                cursor: selectedIdx !== null ? 'default' : 'pointer',
+                transition: 'all 150ms ease',
+                boxShadow: isActive ? '0 1px 4px rgba(0,0,0,0.3)' : 'none',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {opt.label}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
 }

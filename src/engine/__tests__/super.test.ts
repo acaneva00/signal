@@ -35,6 +35,7 @@ function makeFund(overrides: Partial<SuperFund> = {}): SuperFund {
     balance: 200_000,
     phase: 'accumulation',
     investment_return: 0.07,
+    retirement_investment_return: 0.05,
     admin_fee_flat: 500,
     admin_fee_percent: 0.005,
     insurance_premium: 0,
@@ -228,6 +229,45 @@ describe('earnings tax', () => {
 
     expect(result.earningsTax).toBeCloseTo(result.grossEarnings * 0.15, 2);
   });
+
+  it('uses retirement_investment_return in pension phase instead of investment_return', () => {
+    const fund = makeFund({
+      balance: 1_000_000,
+      phase: 'pension',
+      investment_return: 0.07,
+      retirement_investment_return: 0.05,
+      admin_fee_flat: 0,
+      admin_fee_percent: 0,
+      insurance_premium: 0,
+      pension_drawdown_rate: null,
+    });
+    const { result } = calculateSuperMonth(makeBaseParams({
+      fund,
+      age: 67,
+      isRetired: true,
+      fyStartBalance: 1_000_000,
+    }));
+
+    const expectedMonthlyReturn = Math.pow(1.05, 1 / 12) - 1;
+    expect(result.grossEarnings).toBeCloseTo(1_000_000 * expectedMonthlyReturn, 2);
+  });
+
+  it('uses investment_return in accumulation phase (not retirement rate)', () => {
+    const fund = makeFund({
+      balance: 1_000_000,
+      investment_return: 0.07,
+      retirement_investment_return: 0.05,
+      admin_fee_flat: 0,
+      admin_fee_percent: 0,
+    });
+    const { result } = calculateSuperMonth(makeBaseParams({
+      fund,
+      fyStartBalance: 1_000_000,
+    }));
+
+    const expectedMonthlyReturn = Math.pow(1.07, 1 / 12) - 1;
+    expect(result.grossEarnings).toBeCloseTo(1_000_000 * expectedMonthlyReturn, 2);
+  });
 });
 
 // ── Minimum Drawdown Rates ───────────────────────────────────────────────────
@@ -254,6 +294,7 @@ describe('minimum drawdown rates by age', () => {
         admin_fee_percent: 0,
         insurance_premium: 0,
         investment_return: 0,
+        retirement_investment_return: 0,
       });
 
       const { result } = calculateSuperMonth(makeBaseParams({
@@ -278,6 +319,7 @@ describe('minimum drawdown rates by age', () => {
       admin_fee_percent: 0,
       insurance_premium: 0,
       investment_return: 0,
+      retirement_investment_return: 0,
     });
 
     const { result } = calculateSuperMonth(makeBaseParams({
@@ -299,6 +341,7 @@ describe('minimum drawdown rates by age', () => {
       admin_fee_percent: 0,
       insurance_premium: 0,
       investment_return: 0,
+      retirement_investment_return: 0,
     });
 
     const { result } = calculateSuperMonth(makeBaseParams({

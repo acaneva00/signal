@@ -78,6 +78,7 @@ import {
   processDeficit,
   DEFAULT_SURPLUS_RULES,
   DEFAULT_DRAWDOWN_RULES,
+  type SuperFundSummary,
 } from './allocation';
 
 import { getRatesForFY, type FYRates } from './rates/resolver';
@@ -641,16 +642,36 @@ export function project(scenario: Scenario): ProjectionResult {
         isSuperAccessible(ps.age, assumptions.super_preservation_age, ps.isRetired),
       );
 
+      const accessibleSuperFunds: SuperFundSummary[] = anySuperAccessible
+        ? superFunds
+          .filter(f => {
+            const ps = personState.get(f.person_id);
+            return ps && isSuperAccessible(ps.age, assumptions.super_preservation_age, ps.isRetired);
+          })
+          .map(f => ({ person_id: f.person_id, balance: f.balance }))
+        : [];
+
       const deficitResult = processDeficit(
         Math.abs(netCashFlow),
         drawdownRules,
         assets,
         liabilities,
-        { superAccessible: anySuperAccessible },
+        { superAccessible: anySuperAccessible, superFunds: accessibleSuperFunds },
       );
 
       for (const action of deficitResult.actions) {
+        if (action.action === 'draw_super') continue;
         applyDrawdownAction(action, assets, liabilities);
+      }
+
+      for (const sd of deficitResult.super_drawdowns) {
+        const idx = superFunds.findIndex(f => f.person_id === sd.person_id);
+        if (idx >= 0) {
+          superFunds[idx] = {
+            ...superFunds[idx],
+            balance: Math.max(0, superFunds[idx].balance - sd.amount),
+          };
+        }
       }
 
       // Step 14: CGT from deficit disposals

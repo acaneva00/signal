@@ -13,12 +13,41 @@ export interface ScenarioOverrides {
   inflation_rate?: number;
   wage_growth_rate?: number;
   investment_return?: number;
+  retirement_investment_return?: number;
   retirement_age?: number;
+  annual_expenses?: number;
   extra_super_contribution?: number;
   extra_mortgage_payment?: number;
   super_fees_flat?: number;
   super_fees_percent?: number;
   projection_years?: number;
+}
+
+// ── Override → Profile Field Mapping ─────────────────────────────────────────
+// Maps scenario override keys to the profile fields they satisfy.
+// When a projection provides an override, the corresponding profile field
+// no longer needs to exist in the user's stored profile.
+
+export const OVERRIDE_TO_PROFILE_FIELD: Record<string, string> = {
+  retirement_age: 'intended_retirement_age',
+  annual_expenses: 'expenses',
+};
+
+/**
+ * Returns the set of profile field names satisfied by the given overrides.
+ * E.g. { retirement_age: 62 } satisfies the 'intended_retirement_age' field.
+ */
+export function getFieldsSatisfiedByOverrides(
+  overrides: ScenarioOverrides | undefined,
+): Set<string> {
+  const satisfied = new Set<string>();
+  if (!overrides) return satisfied;
+  for (const [overrideKey, profileField] of Object.entries(OVERRIDE_TO_PROFILE_FIELD)) {
+    if ((overrides as Record<string, unknown>)[overrideKey] != null) {
+      satisfied.add(profileField);
+    }
+  }
+  return satisfied;
 }
 
 // ── Band → Value Estimation Tables ───────────────────────────────────────────
@@ -281,6 +310,7 @@ export function buildScenarioFromProfile(
       balance: superBalance,
       phase: 'accumulation',
       investment_return: overrides?.investment_return ?? 0.07,
+      retirement_investment_return: overrides?.retirement_investment_return ?? 0.05,
       admin_fee_flat: overrides?.super_fees_flat ?? 78,
       admin_fee_percent: overrides?.super_fees_percent ?? 0.007,
       insurance_premium: 0,
@@ -294,7 +324,7 @@ export function buildScenarioFromProfile(
 
   // ── Expenses ──
   const expenses: Record<string, unknown>[] = [];
-  const expenseAmount = resolvedData.expenses as number | undefined;
+  const expenseAmount = (resolvedData.expenses as number | undefined) ?? overrides?.annual_expenses;
   if (expenseAmount && expenseAmount > 0) {
     expenses.push({
       name: 'Living expenses',

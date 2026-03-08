@@ -26,6 +26,9 @@ import {
   type ScenarioOverrides,
   checkFieldAvailability,
   buildScenarioFromProfile,
+  getFieldsSatisfiedByOverrides,
+  resolveProfileField,
+  OVERRIDE_TO_PROFILE_FIELD,
 } from './scenario-builder';
 
 // ── Public Types ─────────────────────────────────────────────────────────────
@@ -45,6 +48,7 @@ export interface ChatResult {
   assumptions: string[];
   disclaimers: string[];
   input_request: InputRequest | null;
+  profile_updates: Record<string, unknown>;
 }
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -62,7 +66,10 @@ const TOOLS: Anthropic.Tool[] = [
       'Check which profile fields are required for a financial intent and ' +
       'identify any missing data. Returns required fields, missing fields, ' +
       'available values, and a suggested input widget for the first missing ' +
-      'field. Always call this before run_projection.',
+      'field. Always call this before run_projection. Pass extracted_profile_data ' +
+      'with ANY personal values the user has stated in conversation (income, ' +
+      'super balance, birth year, etc.) — they are saved to the profile ' +
+      'automatically. Pass planned_overrides for scenario-level what-if parameters.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -79,6 +86,51 @@ const TOOLS: Anthropic.Tool[] = [
             'household_net_worth',
           ],
           description: 'The classified financial intent',
+        },
+        planned_overrides: {
+          type: 'object',
+          description:
+            'Scenario-level overrides (hypothetical / what-if parameters) the user ' +
+            'has stated. Fields satisfied by these overrides will be excluded from ' +
+            'the missing list (e.g. { "retirement_age": 62, "annual_expenses": 75000 }).',
+          properties: {
+            retirement_age: { type: 'number' },
+            annual_expenses: { type: 'number', description: 'Annual spending/expenses in dollars' },
+            inflation_rate: { type: 'number' },
+            wage_growth_rate: { type: 'number' },
+            investment_return: { type: 'number' },
+            extra_super_contribution: { type: 'number' },
+            extra_mortgage_payment: { type: 'number' },
+            super_fees_flat: { type: 'number' },
+            super_fees_percent: { type: 'number' },
+          },
+        },
+        extracted_profile_data: {
+          type: 'object',
+          description:
+            'Personal profile values the user has stated anywhere in this conversation ' +
+            '(e.g. "I earn $80k", "born in 1985", "$320k in super"). These are saved ' +
+            'to the user\'s profile automatically and will satisfy missing-field checks. ' +
+            'ALWAYS include ALL profile values mentioned so far in the conversation.',
+          properties: {
+            date_of_birth_year: { type: 'number', description: 'Year of birth (e.g. 1985)' },
+            income: { type: 'number', description: 'Annual gross salary in dollars' },
+            super_balance: { type: 'number', description: 'Current superannuation balance' },
+            intended_retirement_age: { type: 'number', description: 'Target retirement age' },
+            expenses: { type: 'number', description: 'Annual living expenses in dollars' },
+            relationship_status: {
+              type: 'string',
+              enum: ['single', 'partnered', 'married', 'separated'],
+            },
+            is_homeowner: { type: 'boolean', description: 'true if owns home, false if rents' },
+            has_hecs_help_debt: { type: 'boolean' },
+            hecs_help_balance: { type: 'number', description: 'Outstanding HECS/HELP balance' },
+            mortgage_balance: { type: 'number', description: 'Outstanding mortgage balance' },
+            mortgage_rate: { type: 'number', description: 'Interest rate as decimal (e.g. 0.06 for 6%)' },
+            mortgage_repayment: { type: 'number', description: 'Monthly mortgage repayment' },
+            assets: { type: 'number', description: 'Total other assessable assets' },
+            liabilities: { type: 'number', description: 'Total other liabilities' },
+          },
         },
       },
       required: ['intent'],
@@ -110,17 +162,40 @@ const TOOLS: Anthropic.Tool[] = [
         overrides: {
           type: 'object',
           description:
-            'Optional economic-assumption overrides from the user ' +
-            '(e.g. { "inflation_rate": 0.04 }).',
+            'Scenario-level overrides — economic assumptions and what-if parameters ' +
+            '(e.g. { "retirement_age": 62, "annual_expenses": 75000 }).',
           properties: {
             inflation_rate: { type: 'number' },
             wage_growth_rate: { type: 'number' },
             investment_return: { type: 'number' },
             retirement_age: { type: 'number' },
+            annual_expenses: { type: 'number', description: 'Annual spending/expenses in dollars' },
             extra_super_contribution: { type: 'number' },
             extra_mortgage_payment: { type: 'number' },
             super_fees_flat: { type: 'number' },
             super_fees_percent: { type: 'number' },
+          },
+        },
+        extracted_profile_data: {
+          type: 'object',
+          description:
+            'Personal profile values from the conversation to save before running ' +
+            'the projection. Same schema as in get_required_fields.',
+          properties: {
+            date_of_birth_year: { type: 'number' },
+            income: { type: 'number' },
+            super_balance: { type: 'number' },
+            intended_retirement_age: { type: 'number' },
+            expenses: { type: 'number' },
+            relationship_status: { type: 'string' },
+            is_homeowner: { type: 'boolean' },
+            has_hecs_help_debt: { type: 'boolean' },
+            hecs_help_balance: { type: 'number' },
+            mortgage_balance: { type: 'number' },
+            mortgage_rate: { type: 'number' },
+            mortgage_repayment: { type: 'number' },
+            assets: { type: 'number' },
+            liabilities: { type: 'number' },
           },
         },
       },
@@ -155,6 +230,12 @@ const TOOLS: Anthropic.Tool[] = [
           },
           description: 'Scenario variations to compare',
         },
+        extracted_profile_data: {
+          type: 'object',
+          description:
+            'Personal profile values from the conversation to save before comparing. ' +
+            'Same schema as in get_required_fields.',
+        },
       },
       required: ['intent', 'variations'],
     },
@@ -165,110 +246,200 @@ const TOOLS: Anthropic.Tool[] = [
 
 const FIELD_INPUT_REQUESTS: Record<string, InputRequest> = {
   date_of_birth_year: {
-    type: 'numeric_input',
-    range: { min: 1930, max: 2010, step: 1, default: 1985, format: 'year' },
+    type: 'numeric',
     field: 'date_of_birth_year',
     required: true,
+    label: 'BIRTH YEAR',
+    placeholder: 'e.g. 1985',
+    format: 'year',
+    min: 1930,
+    max: 2010,
   },
   income: {
-    type: 'numeric_input',
-    range: { min: 0, max: 500_000, step: 5_000, default: 75_000, format: 'currency' },
+    type: 'numeric',
     field: 'annual_income',
     required: true,
+    label: 'ANNUAL INCOME',
+    hint: 'Before tax, per year',
+    placeholder: 'e.g. 90,000',
+    format: 'currency',
+    min: 0,
+    max: 500_000,
   },
   super_balance: {
-    type: 'numeric_input',
-    range: { min: 0, max: 3_000_000, step: 10_000, default: 50_000, format: 'currency' },
+    type: 'numeric',
     field: 'super_balance',
     required: true,
+    label: 'SUPER BALANCE',
+    hint: 'Approximate is fine',
+    placeholder: 'e.g. 120,000',
+    format: 'currency',
+    min: 0,
+    max: 3_000_000,
   },
   intended_retirement_age: {
-    type: 'numeric_input',
-    range: { min: 55, max: 75, step: 1, default: 67, format: 'number' },
+    type: 'numeric',
     field: 'intended_retirement_age',
     required: true,
+    label: 'RETIREMENT AGE',
+    hint: "When you'd like to stop working",
+    placeholder: 'e.g. 67',
+    format: 'age',
+    min: 50,
+    max: 75,
   },
   expenses: {
-    type: 'numeric_input',
-    range: { min: 0, max: 200_000, step: 5_000, default: 50_000, format: 'currency' },
+    type: 'numeric',
     field: 'expenses',
     required: true,
+    label: 'ANNUAL EXPENSES',
+    hint: 'Annual household expenses',
+    placeholder: 'e.g. 60,000',
+    format: 'currency',
+    min: 0,
+    max: 300_000,
   },
   relationship_status: {
-    type: 'single_select',
-    options: [
-      { label: 'Single', value: 'single' },
-      { label: 'Partnered/de facto', value: 'partnered' },
-      { label: 'Married', value: 'married' },
-      { label: 'Separated/divorced', value: 'separated' },
-    ],
+    type: 'chips',
     field: 'relationship_status',
     required: true,
+    options: [
+      { label: 'Single', value: 'single' },
+      { label: 'Married / De facto', value: 'married' },
+      { label: 'Separated', value: 'separated' },
+    ],
   },
   is_homeowner: {
-    type: 'single_select',
-    options: [
-      { label: 'Own (with mortgage)', value: 'own_with_mortgage' },
-      { label: 'Own (outright)', value: 'own_outright' },
-      { label: 'Rent', value: 'rent' },
-      { label: 'Living with family', value: 'living_with_family' },
-      { label: 'Other', value: 'other' },
-    ],
+    type: 'chips',
     field: 'housing_status',
     required: true,
+    options: [
+      { label: 'I own my home', value: 'own' },
+      { label: 'I rent', value: 'rent' },
+      { label: 'Living with family', value: 'living_with_family' },
+    ],
   },
   has_hecs_help_debt: {
-    type: 'single_select',
-    options: [
-      { label: 'Yes', value: 'true' },
-      { label: 'No', value: 'false' },
-    ],
+    type: 'chips',
     field: 'has_hecs_help_debt',
     required: true,
+    options: [
+      { label: 'Yes, I have HECS', value: 'true' },
+      { label: 'No HECS debt', value: 'false' },
+    ],
   },
   hecs_help_balance: {
-    type: 'numeric_input',
-    range: { min: 0, max: 200_000, step: 1_000, default: 25_000, format: 'currency' },
+    type: 'numeric',
     field: 'hecs_help_balance',
     required: true,
+    label: 'HECS BALANCE',
+    hint: 'Outstanding balance',
+    placeholder: 'e.g. 25,000',
+    format: 'currency',
+    min: 0,
+    max: 200_000,
   },
   mortgage_balance: {
-    type: 'numeric_input',
-    range: { min: 0, max: 3_000_000, step: 10_000, default: 400_000, format: 'currency' },
+    type: 'numeric',
     field: 'mortgage_balance',
     required: true,
+    label: 'MORTGAGE BALANCE',
+    hint: 'Approximate remaining balance',
+    placeholder: 'e.g. 400,000',
+    format: 'currency',
+    min: 0,
+    max: 3_000_000,
   },
   mortgage_rate: {
-    type: 'numeric_input',
-    range: { min: 0, max: 15, step: 0.05, default: 6.0, format: 'percent' },
+    type: 'numeric',
     field: 'mortgage_rate',
     required: true,
+    label: 'MORTGAGE RATE',
+    hint: 'Annual interest rate, e.g. 6.2%',
+    placeholder: 'e.g. 6.2',
+    format: 'number',
+    min: 0,
+    max: 15,
   },
   mortgage_repayment: {
-    type: 'numeric_input',
-    range: { min: 0, max: 10_000, step: 100, default: 2_500, format: 'currency' },
+    type: 'numeric',
     field: 'mortgage_repayment',
     required: true,
+    label: 'MONTHLY REPAYMENT',
+    hint: 'Monthly mortgage repayment',
+    placeholder: 'e.g. 2,500',
+    format: 'currency',
+    min: 0,
+    max: 10_000,
   },
   assets: {
-    type: 'numeric_input',
-    range: { min: 0, max: 5_000_000, step: 10_000, default: 50_000, format: 'currency' },
+    type: 'numeric',
     field: 'assets',
     required: true,
+    label: 'OTHER ASSETS',
+    hint: 'Total other assessable assets',
+    placeholder: 'e.g. 50,000',
+    format: 'currency',
+    min: 0,
+    max: 5_000_000,
   },
   liabilities: {
-    type: 'numeric_input',
-    range: { min: 0, max: 3_000_000, step: 10_000, default: 0, format: 'currency' },
+    type: 'numeric',
     field: 'liabilities',
     required: true,
-  },
-  super_fees: {
-    type: 'free_text',
-    field: 'super_fees',
-    required: false,
-    allow_free_text: true,
+    label: 'OTHER LIABILITIES',
+    hint: 'Total other liabilities',
+    placeholder: 'e.g. 10,000',
+    format: 'currency',
+    min: 0,
+    max: 3_000_000,
   },
 };
+
+// ── Extractable Profile Fields ───────────────────────────────────────────────
+// Fields that Claude can extract from free-text conversation and persist to
+// the user's profile. Maps canonical field name → expected JS typeof.
+
+const EXTRACTABLE_PROFILE_FIELDS: Record<string, 'number' | 'string' | 'boolean'> = {
+  date_of_birth_year: 'number',
+  income: 'number',
+  super_balance: 'number',
+  intended_retirement_age: 'number',
+  expenses: 'number',
+  relationship_status: 'string',
+  is_homeowner: 'boolean',
+  has_hecs_help_debt: 'boolean',
+  hecs_help_balance: 'number',
+  mortgage_balance: 'number',
+  mortgage_rate: 'number',
+  mortgage_repayment: 'number',
+  assets: 'number',
+  liabilities: 'number',
+};
+
+/**
+ * Validate and merge extracted profile data into the tool context.
+ * Values are written to both profileData (for immediate use) and
+ * profileUpdates (for persistence to the database after the turn).
+ */
+function mergeExtractedProfileData(
+  extracted: Record<string, unknown> | undefined,
+  ctx: ToolContext,
+): string[] {
+  const saved: string[] = [];
+  if (!extracted) return saved;
+
+  for (const [field, value] of Object.entries(extracted)) {
+    const expectedType = EXTRACTABLE_PROFILE_FIELDS[field];
+    if (!expectedType || value == null || typeof value !== expectedType) continue;
+
+    ctx.profileData[field] = value;
+    ctx.profileUpdates[field] = value;
+    saved.push(field);
+  }
+
+  return saved;
+}
 
 // ── System Prompt ────────────────────────────────────────────────────────────
 
@@ -281,6 +452,7 @@ YOUR ROLE:
 - Run projections with engine tools and explain results in plain language
 - You NEVER give personal financial advice or product recommendations
 - You NEVER compute numbers yourself — always use the engine tools
+- You NEVER perform arithmetic, rounding, inflation adjustment, or any other transformation on engine output — quote the engine's numbers exactly as returned
 
 INTENTS:
 - super_at_age: Super balance at a specific age ("How much super will I have at 67?")
@@ -295,10 +467,42 @@ INTENTS:
 
 WORKFLOW:
 1. Classify the user's intent
-2. For calculation intents: call get_required_fields to check data availability
-3. If fields are missing: ask the user ONE question, in priority order
-4. If all fields present: call run_projection (or compare_scenarios for comparisons)
-5. Explain results in plain language with assumptions listed
+2. Extract ALL values the user has stated in this conversation. Separate them into two categories:
+   a. PROFILE DATA — personal facts about the user. Map to extracted_profile_data keys:
+      • Birth year / age / "born in X" → date_of_birth_year (number, e.g. 1985)
+      • Salary / income / "I earn $X" → income (number, e.g. 80000)
+      • Super balance / "I have $X in super" → super_balance (number, e.g. 320000)
+      • Retirement age / "retire at X" → intended_retirement_age (number, e.g. 67)
+      • Expenses / spending / "I spend $X" → expenses (number, e.g. 60000)
+      • Relationship → relationship_status (string: single, partnered, married, separated)
+      • Owns home → is_homeowner (boolean)
+      • HECS/HELP → has_hecs_help_debt (boolean), hecs_help_balance (number)
+      • Mortgage → mortgage_balance, mortgage_rate (decimal e.g. 0.06), mortgage_repayment (monthly)
+      • Other assets / liabilities → assets, liabilities (numbers)
+   b. SCENARIO OVERRIDES — hypothetical/what-if parameters. Map to planned_overrides keys:
+      • "What if inflation is 4%?" → inflation_rate
+      • "Assume 8% return" → investment_return
+      • Wage growth → wage_growth_rate
+      • Extra super contributions → extra_super_contribution
+      • Retirement age for what-if → retirement_age
+      • Spending for what-if → annual_expenses
+3. For calculation intents: call get_required_fields, passing:
+   - extracted_profile_data with ALL profile values from step 2a (saves them to the user's profile)
+   - planned_overrides with scenario overrides from step 2b
+4. If fields are still missing: ask the user ONE question, in priority order
+5. If all fields present: call run_projection (or compare_scenarios for comparisons), passing scenario overrides
+6. Explain results in plain language with assumptions listed
+
+EXTRACTING USER DATA — CRITICAL:
+- Whenever the user states a personal fact (e.g. "I earn $80k", "born in 1985", "$320k in super"), you MUST include it in extracted_profile_data on your NEXT tool call.
+- Scan the ENTIRE conversation history for previously stated values — not just the latest message.
+- Extracted values are automatically saved to the user's profile and persist across turns and intents.
+- NEVER re-ask for a value the user has already provided — extract it instead.
+- If a user gives a value via free text (e.g. "80000") in response to a question, capture it in extracted_profile_data on your next tool call.
+
+SCENARIO OVERRIDES — CAPTURE BEFORE ASKING:
+- For "what if" / comparison questions (e.g. "What if I retire at 62 instead?"), identify BOTH the baseline (from prior conversation or profile) and the alternative (from the user's message). Call compare_scenarios with each as a variation using overrides.
+- Overrides used in run_projection are automatically saved to the user's profile for future intents.
 
 DATA COLLECTION — CRITICAL:
 - Personal data is ALWAYS asked, never silently defaulted
@@ -312,7 +516,15 @@ DATA COLLECTION — CRITICAL:
   • HECS/HELP debt → ask balance; otherwise skip
   • Investment property → ask value, rental income, mortgage
 
-When asking for a field, the get_required_fields tool returns an input_request object. Reference the field naturally in your question — the frontend will render the appropriate input widget.
+When asking for a field, the get_required_fields tool returns an input_request object. The frontend renders an interactive input widget (numeric keypad, chips, etc.) directly below your message. Because the widget already shows labels, hints, and formatting, keep your question to ONE SHORT SENTENCE — e.g. "What year were you born?" not "What year were you born? (e.g. 1985) This helps determine your current age and years until retirement." Do NOT repeat the hint, placeholder, or explain why you need the field — the card handles that.
+If the user has already answered a question via free text in an earlier message, do NOT ask again — pass the value in extracted_profile_data instead.
+
+PROJECTION SCOPE:
+- Standard projections (super_at_age, compare_retirement_age, fee_impact, household_net_worth, etc.) cover the ACCUMULATION PHASE ONLY — from now until retirement age.
+- They do NOT model retirement drawdown, pension income, or post-retirement expenses because retirement spending details have not been captured yet.
+- Only the super_longevity intent projects through the full retirement phase (it requires expenses data).
+- When presenting accumulation-only results, make this clear: "This projection shows your position at retirement. It doesn't model how you'll draw down savings in retirement."
+- If the user asks "How long will my super last?" or about retirement income sustainability, use the super_longevity intent — it will collect the necessary expense data.
 
 ECONOMIC ASSUMPTIONS (defaults — always disclose when used in a projection):
 - Investment return (balanced): 7.0% p.a. | (conservative): 5.0% | (growth): 8.5%
@@ -329,6 +541,12 @@ EXPLAINING RESULTS:
   • Rich profile: "This uses your actual income, expenses, super, and details — a much more personalised picture."
 - Always end with: "This is a projection based on assumptions, not financial advice. Consider speaking to a licensed financial adviser for personal advice."
 
+NUMBERS — CRITICAL:
+- Every dollar figure you state MUST come directly from the engine's output. NEVER calculate, round, adjust, or derive your own figures.
+- All engine output is in nominal (future) dollars. Always present numbers in nominal terms and label them as such (e.g. "approximately $1.74 million in nominal terms").
+- If the user asks for values in today's dollars or real terms, tell them the engine currently reports in nominal terms and note that the real purchasing power would be lower after accounting for inflation. Do NOT attempt to calculate the real value yourself.
+- NEVER present two different dollar figures for the same metric. If you state a super balance at retirement, use ONE number — the one from the engine — consistently throughout your entire response.
+
 USER'S AVAILABLE PROFILE FIELDS: [${availableFields.length > 0 ? availableFields.join(', ') : 'none yet'}]
 Only these fields have data. Do NOT ask for fields that are already available unless the user wants to update them.`;
 }
@@ -337,6 +555,7 @@ Only these fields have data. Do NOT ask for fields that are already available un
 
 interface ToolContext {
   profileData: ProfileData;
+  profileUpdates: Record<string, unknown>;
   lastProjectionResult: ProjectionResult | null;
   lastProjectionSummary: ProjectionSummary | null;
   lastComparisonResult: ComparisonResult | null;
@@ -345,13 +564,58 @@ interface ToolContext {
   lastOverrides: ScenarioOverrides | null;
 }
 
+// ── Projection Scope ─────────────────────────────────────────────────────────
+// Only super_longevity models the full retirement/drawdown phase (it requires
+// expenses). All other intents project the accumulation phase only, ending at
+// the target or retirement age.
+
+const FULL_LIFECYCLE_INTENTS = new Set(['super_longevity']);
+
+/**
+ * Determine projection_years based on intent. Accumulation-only intents stop
+ * at retirement (or target) age; full-lifecycle intents return undefined so
+ * the builder keeps its age-90 default.
+ */
+function projectionYearsForIntent(
+  intent: string,
+  targetAge: number | undefined,
+  profileData: ProfileData,
+  overrides: ScenarioOverrides,
+): number | undefined {
+  if (FULL_LIFECYCLE_INTENTS.has(intent)) return undefined;
+
+  const dobYear = resolveProfileField(profileData, 'date_of_birth_year') as number | undefined;
+  if (!dobYear) return undefined;
+
+  const currentAge = new Date().getFullYear() - dobYear;
+  const retirementAge =
+    overrides.retirement_age ??
+    (resolveProfileField(profileData, 'intended_retirement_age') as number | undefined) ??
+    67;
+
+  let endAge: number;
+  if (intent === 'aged_pension') {
+    endAge = Math.max(retirementAge, 70);
+  } else {
+    endAge = targetAge ?? retirementAge;
+  }
+
+  return Math.max(endAge - currentAge, 1);
+}
+
 // ── Tool Handlers ────────────────────────────────────────────────────────────
 
 function handleGetRequiredFields(
-  input: { intent: string },
+  input: {
+    intent: string;
+    planned_overrides?: ScenarioOverrides;
+    extracted_profile_data?: Record<string, unknown>;
+  },
   ctx: ToolContext,
 ): Record<string, unknown> {
   ctx.classifiedIntent = input.intent;
+
+  const savedFields = mergeExtractedProfileData(input.extracted_profile_data, ctx);
 
   const requiredFields = getRequiredVariables(input.intent);
   if (requiredFields.length === 0) {
@@ -363,8 +627,11 @@ function handleGetRequiredFields(
 
   const { available, missing } = checkFieldAvailability(ctx.profileData, requiredFields);
 
+  const satisfied = getFieldsSatisfiedByOverrides(input.planned_overrides);
+  const effectiveMissing = missing.filter((f) => !satisfied.has(f));
+
   const inputRequest =
-    missing.length > 0 ? (FIELD_INPUT_REQUESTS[missing[0]] ?? null) : null;
+    effectiveMissing.length > 0 ? (FIELD_INPUT_REQUESTS[effectiveMissing[0]] ?? null) : null;
   if (inputRequest) {
     ctx.lastInputRequest = inputRequest;
   }
@@ -372,9 +639,10 @@ function handleGetRequiredFields(
   return {
     intent: input.intent,
     required_fields: requiredFields,
-    missing_fields: missing,
+    missing_fields: effectiveMissing,
     available_data: available,
     input_request: inputRequest,
+    ...(savedFields.length > 0 ? { saved_to_profile: savedFields } : {}),
   };
 }
 
@@ -384,27 +652,43 @@ function handleRunProjection(
     target_age?: number;
     projection_years?: number;
     overrides?: ScenarioOverrides;
+    extracted_profile_data?: Record<string, unknown>;
   },
   ctx: ToolContext,
 ): Record<string, unknown> {
   ctx.classifiedIntent = input.intent;
 
-  const requiredFields = getRequiredVariables(input.intent);
-  const { available, missing } = checkFieldAvailability(ctx.profileData, requiredFields);
-
-  if (missing.length > 0) {
-    return {
-      success: false,
-      error: `Cannot run projection — missing fields: ${missing.join(', ')}. Call get_required_fields first.`,
-    };
-  }
+  mergeExtractedProfileData(input.extracted_profile_data, ctx);
 
   const overrides: ScenarioOverrides = {
     ...input.overrides,
     ...(input.projection_years != null ? { projection_years: input.projection_years } : {}),
     ...(input.target_age != null ? { retirement_age: input.target_age } : {}),
   };
+
+  const requiredFields = getRequiredVariables(input.intent);
+  const { available, missing } = checkFieldAvailability(ctx.profileData, requiredFields);
+
+  const satisfied = getFieldsSatisfiedByOverrides(overrides);
+  const effectiveMissing = missing.filter((f) => !satisfied.has(f));
+
+  if (effectiveMissing.length > 0) {
+    return {
+      success: false,
+      error: `Cannot run projection — missing fields: ${effectiveMissing.join(', ')}. Call get_required_fields first.`,
+    };
+  }
+
   ctx.lastOverrides = overrides;
+
+  if (overrides.projection_years == null) {
+    const scopedYears = projectionYearsForIntent(
+      input.intent, input.target_age, ctx.profileData, overrides,
+    );
+    if (scopedYears != null) {
+      overrides.projection_years = scopedYears;
+    }
+  }
 
   const scenarioInput = buildScenarioFromProfile(
     available,
@@ -418,7 +702,23 @@ function handleRunProjection(
     ctx.lastProjectionResult = result;
     ctx.lastProjectionSummary = summary;
 
-    return { success: true, summary, warnings: result.warnings };
+    persistOverridesToProfile(overrides, ctx);
+
+    const isAccumulationOnly = !FULL_LIFECYCLE_INTENTS.has(input.intent);
+
+    return {
+      success: true,
+      summary,
+      warnings: result.warnings,
+      ...(isAccumulationOnly
+        ? {
+            note:
+              'This projection covers the accumulation phase only (until retirement). ' +
+              'Retirement drawdown is not modelled because retirement expenses have not been captured. ' +
+              'If the user asks how long their money will last in retirement, use the super_longevity intent.',
+          }
+        : {}),
+    };
   } catch (error) {
     return {
       success: false,
@@ -431,36 +731,95 @@ function handleCompareScenarios(
   input: {
     intent: string;
     variations: Array<{ name: string; overrides: ScenarioOverrides }>;
+    extracted_profile_data?: Record<string, unknown>;
   },
   ctx: ToolContext,
 ): Record<string, unknown> {
   ctx.classifiedIntent = input.intent;
 
+  mergeExtractedProfileData(input.extracted_profile_data, ctx);
+
   const requiredFields = getRequiredVariables(input.intent);
   const { available, missing } = checkFieldAvailability(ctx.profileData, requiredFields);
 
-  if (missing.length > 0) {
+  const commonSatisfied = getCommonOverrideSatisfiedFields(input.variations);
+  const effectiveMissing = missing.filter((f) => !commonSatisfied.has(f));
+
+  if (effectiveMissing.length > 0) {
     return {
       success: false,
-      error: `Cannot compare — missing fields: ${missing.join(', ')}`,
+      error: `Cannot compare — missing fields: ${effectiveMissing.join(', ')}`,
     };
   }
 
   try {
-    const scenarioInputs = input.variations.map((v) =>
-      buildScenarioFromProfile(available, v.overrides as ScenarioOverrides, v.name),
-    );
+    const scenarioInputs = input.variations.map((v) => {
+      const variationOverrides = { ...(v.overrides as ScenarioOverrides) };
+      if (variationOverrides.projection_years == null) {
+        const scopedYears = projectionYearsForIntent(
+          input.intent, undefined, ctx.profileData, variationOverrides,
+        );
+        if (scopedYears != null) {
+          variationOverrides.projection_years = scopedYears;
+        }
+      }
+      return buildScenarioFromProfile(available, variationOverrides, v.name);
+    });
 
     const result = compareScenarios(scenarioInputs);
     ctx.lastComparisonResult = result;
 
-    return { success: true, comparison: result };
+    const isAccumulationOnly = !FULL_LIFECYCLE_INTENTS.has(input.intent);
+
+    return {
+      success: true,
+      comparison: result,
+      ...(isAccumulationOnly
+        ? {
+            note:
+              'These projections cover the accumulation phase only (until each scenario\'s retirement age). ' +
+              'Retirement drawdown is not modelled because retirement expenses have not been captured.',
+          }
+        : {}),
+    };
   } catch (error) {
     return {
       success: false,
       error: error instanceof Error ? error.message : 'Comparison failed',
     };
   }
+}
+
+/**
+ * After a successful projection, persist override values back to the profile
+ * so future intents can see them (e.g. target_age=67 → intended_retirement_age=67).
+ */
+function persistOverridesToProfile(overrides: ScenarioOverrides, ctx: ToolContext): void {
+  for (const [overrideKey, profileField] of Object.entries(OVERRIDE_TO_PROFILE_FIELD)) {
+    const value = (overrides as Record<string, unknown>)[overrideKey];
+    if (value != null) {
+      ctx.profileData[profileField] = value;
+      ctx.profileUpdates[profileField] = value;
+    }
+  }
+}
+
+/**
+ * For compare_scenarios: a profile field is satisfied only if EVERY variation
+ * provides the corresponding override, since each scenario needs the value.
+ */
+function getCommonOverrideSatisfiedFields(
+  variations: Array<{ overrides: ScenarioOverrides }>,
+): Set<string> {
+  if (variations.length === 0) return new Set();
+  const sets = variations.map((v) => getFieldsSatisfiedByOverrides(v.overrides));
+  const common = new Set<string>();
+  for (const field of sets[0]) {
+    if (sets.every((s) => s.has(field))) {
+      common.add(field);
+    }
+  }
+  return common;
 }
 
 function executeToolCall(
@@ -470,7 +829,10 @@ function executeToolCall(
 ): Record<string, unknown> {
   switch (name) {
     case 'get_required_fields':
-      return handleGetRequiredFields(input as { intent: string }, ctx);
+      return handleGetRequiredFields(
+        input as Parameters<typeof handleGetRequiredFields>[0],
+        ctx,
+      );
     case 'run_projection':
       return handleRunProjection(
         input as Parameters<typeof handleRunProjection>[0],
@@ -539,6 +901,7 @@ export async function runChat(
 
   const ctx: ToolContext = {
     profileData,
+    profileUpdates: {},
     lastProjectionResult: null,
     lastProjectionSummary: null,
     lastComparisonResult: null,
@@ -611,5 +974,6 @@ export async function runChat(
           ]
         : [],
     input_request: hasProjection || hasComparison ? null : ctx.lastInputRequest,
+    profile_updates: ctx.profileUpdates,
   };
 }

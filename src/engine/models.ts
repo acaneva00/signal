@@ -171,7 +171,8 @@ export const SuperFundSchema = z.object({
   person_id: z.string(),
   balance: z.number().default(0.0),
   phase: SuperPhaseEnum.default("accumulation"),
-  investment_return: z.number().default(0.07), // gross return before tax
+  investment_return: z.number().default(0.07), // gross return before tax (accumulation)
+  retirement_investment_return: z.number().default(0.05), // conservative return in pension phase
   admin_fee_flat: z.number().default(500), // flat annual admin fee
   admin_fee_percent: z.number().default(0.005), // % based fee
   insurance_premium: z.number().default(0.0), // annual insurance deducted

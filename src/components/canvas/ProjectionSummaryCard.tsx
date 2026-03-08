@@ -1,6 +1,5 @@
 'use client'
 
-import { Card } from '@/components/ui/card'
 import type { ProjectionSummary } from '@/types/agent'
 import { formatCurrencyFull } from '@/lib/canvas/format'
 
@@ -11,8 +10,16 @@ interface Props {
 
 export function ProjectionSummaryCard({ summary, assumptions }: Props) {
   return (
-    <Card className="p-4 mt-3 space-y-3 bg-white border border-slate-200">
-      <div className="grid grid-cols-2 gap-3">
+    <div
+      style={{
+        padding: 16,
+        marginTop: 12,
+        background: 'var(--color-bg-surface)',
+        border: '1px solid var(--color-border)',
+        borderRadius: 'var(--radius-lg)',
+      }}
+    >
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
         <Metric
           label="Super at retirement"
           value={formatCurrencyFull(summary.final_super)}
@@ -38,19 +45,19 @@ export function ProjectionSummaryCard({ summary, assumptions }: Props) {
       </div>
 
       {assumptions.length > 0 && (
-        <div className="pt-2 border-t border-slate-100">
-          <p className="text-xs font-medium text-slate-500 mb-1">Assumptions</p>
-          <ul className="space-y-0.5">
+        <div style={{ paddingTop: 10, marginTop: 12, borderTop: '1px solid var(--color-border)' }}>
+          <p style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 4 }}>Assumptions</p>
+          <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
             {assumptions.map((a, i) => (
-              <li key={i} className="text-xs text-slate-500 flex gap-1.5">
-                <span className="text-slate-400 shrink-0">•</span>
+              <li key={i} style={{ fontSize: 11, color: 'var(--color-text-secondary)', display: 'flex', gap: 6, marginBottom: 2 }}>
+                <span style={{ color: 'var(--color-text-muted)', flexShrink: 0 }}>•</span>
                 {a}
               </li>
             ))}
           </ul>
         </div>
       )}
-    </Card>
+    </div>
   )
 }
 
@@ -65,15 +72,19 @@ function Metric({
 }) {
   return (
     <div>
-      <p className="text-xs text-slate-500">{label}</p>
+      <p style={{ fontSize: 11, color: 'var(--color-text-muted)', margin: '0 0 2px' }}>{label}</p>
       <p
-        className={`text-sm font-semibold ${
-          positive === true
-            ? 'text-green-700'
+        style={{
+          fontSize: 14,
+          fontWeight: 600,
+          fontFamily: 'var(--font-mono)',
+          margin: 0,
+          color: positive === true
+            ? 'var(--color-accent-success)'
             : positive === false
-              ? 'text-red-600'
-              : 'text-slate-900'
-        }`}
+              ? 'var(--color-accent-danger)'
+              : 'var(--color-text-primary)',
+        }}
       >
         {value}
       </p>

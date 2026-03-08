@@ -14,6 +14,15 @@ import {
 import type { YearlyDetail } from '@/types/agent'
 import { formatCurrency, formatCurrencyFull, COLORS } from '@/lib/canvas/format'
 
+const TICK_STYLE = { fontSize: 11, fill: '#8B8FA8' }
+const TOOLTIP_STYLE = {
+  backgroundColor: '#16181F',
+  border: '1px solid rgba(255,255,255,0.1)',
+  borderRadius: '8px',
+  fontSize: '12px',
+  color: '#F0F2F5',
+}
+
 interface Props {
   detail: YearlyDetail
 }
@@ -54,29 +63,24 @@ export function CashFlowWaterfall({ detail }: Props) {
 
   return (
     <div className="w-full">
-      <h3 className="text-sm font-semibold text-slate-700 mb-1">
+      <h3 style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 2 }}>
         Cash Flow — FY{detail.financial_year}
       </h3>
-      <p className="text-xs text-slate-500 mb-3">Age {detail.age}</p>
+      <p style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 12 }}>Age {detail.age}</p>
       <div className="w-full h-[260px]">
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={data} margin={{ top: 8, right: 12, left: 8, bottom: 4 }}>
             <CartesianGrid strokeDasharray="3 3" stroke={COLORS.grid} vertical={false} />
-            <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#64748B' }} />
-            <YAxis tickFormatter={formatCurrency} tick={{ fontSize: 12, fill: '#64748B' }} width={60} />
+            <XAxis dataKey="name" tick={{ fontSize: 10, fill: '#8B8FA8' }} />
+            <YAxis tickFormatter={formatCurrency} tick={TICK_STYLE} width={60} />
             <Tooltip
               formatter={((value: number, name: string) => {
                 if (name === 'base') return [null, null]
                 return [formatCurrencyFull(value), 'Amount']
               }) as never}
-              contentStyle={{
-                backgroundColor: 'white',
-                border: '1px solid #E2E8F0',
-                borderRadius: '8px',
-                fontSize: '13px',
-              }}
+              contentStyle={TOOLTIP_STYLE}
             />
-            <ReferenceLine y={0} stroke="#94A3B8" />
+            <ReferenceLine y={0} stroke="#4A4D5E" />
             <Bar dataKey="base" stackId="waterfall" fill="transparent" />
             <Bar dataKey="amount" stackId="waterfall" radius={[3, 3, 0, 0]}>
               {data.map((entry, idx) => (

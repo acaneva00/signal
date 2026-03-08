@@ -14,6 +14,15 @@ import {
 import type { ComparisonResult } from '@/types/agent'
 import { formatCurrency, formatCurrencyFull, COLORS } from '@/lib/canvas/format'
 
+const TICK_STYLE = { fontSize: 11, fill: '#8B8FA8' }
+const TOOLTIP_STYLE = {
+  backgroundColor: '#16181F',
+  border: '1px solid rgba(255,255,255,0.1)',
+  borderRadius: '8px',
+  fontSize: '12px',
+  color: '#F0F2F5',
+}
+
 interface Props {
   comparison: ComparisonResult
 }
@@ -30,25 +39,20 @@ export function FeeImpactBarChart({ comparison }: Props) {
 
   return (
     <div className="w-full">
-      <h3 className="text-sm font-semibold text-slate-700 mb-2">
+      <h3 style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 8 }}>
         Fee Impact on Super Balance
       </h3>
       <div className="w-full h-[260px]">
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={data} margin={{ top: 8, right: 12, left: 8, bottom: 4 }}>
             <CartesianGrid strokeDasharray="3 3" stroke={COLORS.grid} />
-            <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#64748B' }} />
-            <YAxis tickFormatter={formatCurrency} tick={{ fontSize: 12, fill: '#64748B' }} width={60} />
+            <XAxis dataKey="name" tick={{ fontSize: 10, fill: '#8B8FA8' }} />
+            <YAxis tickFormatter={formatCurrency} tick={TICK_STYLE} width={60} />
             <Tooltip
               formatter={((value: number) => [formatCurrencyFull(value), 'Final Super']) as never}
-              contentStyle={{
-                backgroundColor: 'white',
-                border: '1px solid #E2E8F0',
-                borderRadius: '8px',
-                fontSize: '13px',
-              }}
+              contentStyle={TOOLTIP_STYLE}
             />
-            <Legend wrapperStyle={{ fontSize: '12px' }} />
+            <Legend wrapperStyle={{ fontSize: '11px', color: '#8B8FA8' }} />
             <Bar dataKey="final_super" name="Final Super Balance" radius={[4, 4, 0, 0]}>
               {data.map((_, idx) => (
                 <Cell
@@ -61,12 +65,27 @@ export function FeeImpactBarChart({ comparison }: Props) {
         </ResponsiveContainer>
       </div>
 
-      <div className="mt-3 rounded-lg bg-slate-50 border border-slate-200 p-3 text-center">
-        <p className="text-xs text-slate-500">Difference attributable to fees</p>
-        <p className={`text-lg font-bold ${diff > 0 ? 'text-red-600' : 'text-green-700'}`}>
+      <div
+        style={{
+          marginTop: 12,
+          borderRadius: 'var(--radius-md)',
+          background: 'var(--color-bg-surface)',
+          border: '1px solid var(--color-border)',
+          padding: 12,
+          textAlign: 'center',
+        }}
+      >
+        <p style={{ fontSize: 11, color: 'var(--color-text-muted)', margin: 0 }}>Difference attributable to fees</p>
+        <p style={{
+          fontSize: 20,
+          fontWeight: 700,
+          fontFamily: 'var(--font-mono)',
+          color: diff > 0 ? 'var(--color-accent-danger)' : 'var(--color-accent-success)',
+          margin: '4px 0',
+        }}>
           {formatCurrencyFull(Math.abs(diff))}
         </p>
-        <p className="text-xs text-slate-500 mt-0.5">
+        <p style={{ fontSize: 11, color: 'var(--color-text-muted)', margin: 0 }}>
           {diff > 0
             ? `Higher fees cost you ${formatCurrencyFull(diff)} over the projection`
             : `Lower fees save you ${formatCurrencyFull(Math.abs(diff))} over the projection`}

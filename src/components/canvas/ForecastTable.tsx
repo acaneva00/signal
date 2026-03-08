@@ -41,28 +41,45 @@ export function ForecastTable({ summary }: Props) {
 
   return (
     <div className="w-full">
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="text-sm font-semibold text-slate-700">
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+        <h3 style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)' }}>
           Forecast by Financial Year
         </h3>
         {detail.length > 10 && (
           <button
             onClick={() => setExpanded(!expanded)}
-            className="text-xs text-blue-600 hover:text-blue-700 font-medium"
+            style={{
+              fontSize: 11,
+              fontWeight: 500,
+              color: 'var(--color-accent-primary)',
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+            }}
           >
             {expanded ? 'Show less' : `Show all ${detail.length} years`}
           </button>
         )}
       </div>
 
-      <div className="overflow-x-auto rounded-lg border border-slate-200">
-        <table className="w-full text-xs">
+      <div style={{ overflowX: 'auto', borderRadius: 'var(--radius-md)', border: '1px solid var(--color-border)' }}>
+        <table style={{ width: '100%', fontSize: 11, borderCollapse: 'collapse' }}>
           <thead>
-            <tr className="bg-slate-50 border-b border-slate-200">
+            <tr style={{ borderBottom: '1px solid var(--color-border)' }}>
               {COLUMNS.map((col) => (
                 <th
                   key={col.key}
-                  className="px-2 py-2 text-left font-semibold text-slate-600 whitespace-nowrap"
+                  style={{
+                    padding: '8px 8px',
+                    textAlign: 'left',
+                    fontWeight: 600,
+                    fontSize: 10,
+                    color: 'var(--color-text-muted)',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.04em',
+                    whiteSpace: 'nowrap',
+                    background: 'var(--color-bg-surface)',
+                  }}
                 >
                   {col.label}
                 </th>
@@ -73,14 +90,23 @@ export function ForecastTable({ summary }: Props) {
             {rows.map((row, idx) => (
               <tr
                 key={row.financial_year}
-                className={idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}
+                style={{
+                  background: idx % 2 === 0 ? 'var(--color-bg-base)' : 'var(--color-bg-surface)',
+                  borderBottom: '1px solid var(--color-border)',
+                }}
               >
                 {COLUMNS.map((col) => {
                   const val = row[col.key]
                   return (
                     <td
                       key={col.key}
-                      className="px-2 py-1.5 text-slate-700 tabular-nums whitespace-nowrap"
+                      style={{
+                        padding: '6px 8px',
+                        color: 'var(--color-text-secondary)',
+                        fontFamily: col.isCurrency ? 'var(--font-mono)' : 'inherit',
+                        fontVariantNumeric: 'tabular-nums',
+                        whiteSpace: 'nowrap',
+                      }}
                       title={col.isCurrency ? formatCurrencyFull(val as number) : undefined}
                     >
                       {col.isCurrency ? formatCurrency(val as number) : val}

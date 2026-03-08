@@ -28,22 +28,16 @@ export interface CanvasState {
 }
 
 export interface InputRequest {
-  type: 'single_select' | 'multi_select' | 'numeric_input' | 'free_text'
-  options?: Array<{ 
-    label: string
-    value: string
-    icon?: string 
-  }>
-  range?: { 
-    min: number
-    max: number
-    step: number
-    default: number
-    format: string 
-  }
-  field: string           // maps to financial_profiles field path
-  required: boolean       // if false, show skip option
-  allow_free_text?: boolean // if true, show 'Other' option with text input
+  type: 'numeric' | 'chips' | 'segmented'
+  field: string
+  required: boolean
+  label?: string
+  hint?: string
+  placeholder?: string
+  options?: Array<{ label: string; value: string }>
+  format?: 'currency' | 'year' | 'age' | 'number'
+  min?: number
+  max?: number
 }
 
 export interface AgentOutput {
@@ -63,7 +57,7 @@ export interface StructuredResponse {
   field: string
   value: any
   source: 'structured_input'
-  confidence: 1.0
+  confidence: number
 }
 
 /**

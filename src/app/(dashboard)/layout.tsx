@@ -17,9 +17,9 @@ export default async function DashboardLayout({
   }
 
   return (
-    <div className="flex h-screen bg-slate-50">
-      <Sidebar />
-      <main className="flex-1 overflow-auto">
+    <div className="flex h-screen" style={{ background: 'var(--color-bg-base)' }}>
+      <Sidebar userEmail={user.email} />
+      <main className="flex-1 min-h-0 overflow-hidden">
         {children}
       </main>
     </div>

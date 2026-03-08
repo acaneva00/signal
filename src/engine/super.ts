@@ -374,7 +374,10 @@ export function calculateSuperMonth(params: SuperMonthParams): SuperMonthOutput 
   }
 
   // ── Earnings ───────────────────────────────────────────────────────
-  const monthReturn = monthlyReturnRate(fund.investment_return);
+  const effectiveReturn = phase === 'pension'
+    ? fund.retirement_investment_return
+    : fund.investment_return;
+  const monthReturn = monthlyReturnRate(effectiveReturn);
   result.grossEarnings = balance * monthReturn;
 
   if (phase === 'accumulation' || phase === 'transition') {

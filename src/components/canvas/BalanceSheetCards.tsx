@@ -1,6 +1,5 @@
 'use client'
 
-import { Card } from '@/components/ui/card'
 import type { ProjectionSummary } from '@/types/agent'
 import { formatCurrencyFull } from '@/lib/canvas/format'
 
@@ -12,40 +11,51 @@ export function BalanceSheetCards({ summary }: Props) {
   const { opening_position: open, closing_position: close } = summary
 
   return (
-    <div className="w-full space-y-3">
-      <h3 className="text-sm font-semibold text-slate-700">Balance Sheet</h3>
+    <div className="w-full" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <h3 style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)' }}>Balance Sheet</h3>
 
-      <div className="grid grid-cols-2 gap-3">
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
         <PositionCard title="Opening" position={open} />
         <PositionCard title="Closing" position={close} />
       </div>
 
-      <Card className="p-3 bg-slate-50 border-slate-200">
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-slate-600">Net Worth Change</span>
-          <span
-            className={`text-sm font-bold ${
-              summary.net_worth_growth >= 0 ? 'text-green-700' : 'text-red-600'
-            }`}
-          >
-            {summary.net_worth_growth >= 0 ? '+' : ''}
-            {formatCurrencyFull(summary.net_worth_growth)}
-          </span>
-        </div>
-      </Card>
+      <div
+        style={{
+          padding: 12,
+          background: 'var(--color-bg-surface)',
+          border: '1px solid var(--color-border)',
+          borderRadius: 'var(--radius-md)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}
+      >
+        <span style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}>Net Worth Change</span>
+        <span
+          style={{
+            fontSize: 14,
+            fontWeight: 700,
+            fontFamily: 'var(--font-mono)',
+            color: summary.net_worth_growth >= 0 ? 'var(--color-accent-success)' : 'var(--color-accent-danger)',
+          }}
+        >
+          {summary.net_worth_growth >= 0 ? '+' : ''}
+          {formatCurrencyFull(summary.net_worth_growth)}
+        </span>
+      </div>
 
       {summary.milestones.length > 0 && (
         <div>
-          <p className="text-xs font-medium text-slate-500 mb-1.5">Milestones</p>
-          <div className="space-y-1">
+          <p style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 6 }}>Milestones</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             {summary.milestones.map((m, i) => (
-              <div key={i} className="flex items-start gap-2 text-xs text-slate-600">
-                <span className="shrink-0 w-14 text-slate-400">
+              <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 11, color: 'var(--color-text-secondary)' }}>
+                <span style={{ flexShrink: 0, width: 56, color: 'var(--color-text-muted)' }}>
                   {m.month}/{m.year}
                 </span>
                 <span>{m.event}</span>
                 {m.amount != null && (
-                  <span className="ml-auto font-medium text-slate-700">
+                  <span style={{ marginLeft: 'auto', fontWeight: 500, fontFamily: 'var(--font-mono)', color: 'var(--color-text-primary)' }}>
                     {formatCurrencyFull(m.amount)}
                   </span>
                 )}
@@ -66,15 +76,32 @@ function PositionCard({
   position: { net_worth: number; total_assets: number; total_super: number; total_liabilities: number }
 }) {
   return (
-    <Card className="p-3 space-y-2">
-      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{title}</p>
+    <div
+      style={{
+        padding: 12,
+        background: 'var(--color-bg-surface)',
+        border: '1px solid var(--color-border)',
+        borderRadius: 'var(--radius-md)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+      }}
+    >
+      <p style={{
+        fontSize: 11,
+        fontWeight: 600,
+        color: 'var(--color-text-muted)',
+        textTransform: 'uppercase',
+        letterSpacing: '0.05em',
+        margin: 0,
+      }}>{title}</p>
       <Row label="Total Assets" value={position.total_assets} />
       <Row label="Super" value={position.total_super} />
       <Row label="Liabilities" value={-position.total_liabilities} negative />
-      <div className="pt-1.5 border-t border-slate-100">
+      <div style={{ paddingTop: 6, borderTop: '1px solid var(--color-border)' }}>
         <Row label="Net Worth" value={position.net_worth} bold />
       </div>
-    </Card>
+    </div>
   )
 }
 
@@ -90,18 +117,22 @@ function Row({
   bold?: boolean
 }) {
   return (
-    <div className="flex items-center justify-between">
-      <span className={`text-xs ${bold ? 'font-semibold text-slate-800' : 'text-slate-600'}`}>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      <span style={{ fontSize: 11, fontWeight: bold ? 600 : 400, color: bold ? 'var(--color-text-primary)' : 'var(--color-text-secondary)' }}>
         {label}
       </span>
       <span
-        className={`text-xs tabular-nums ${
-          bold
-            ? 'font-bold text-slate-900'
+        style={{
+          fontSize: 11,
+          fontFamily: 'var(--font-mono)',
+          fontVariantNumeric: 'tabular-nums',
+          fontWeight: bold ? 700 : 400,
+          color: bold
+            ? 'var(--color-text-primary)'
             : negative
-              ? 'text-red-600'
-              : 'text-slate-700'
-        }`}
+              ? 'var(--color-accent-danger)'
+              : 'var(--color-text-secondary)',
+        }}
       >
         {formatCurrencyFull(value)}
       </span>

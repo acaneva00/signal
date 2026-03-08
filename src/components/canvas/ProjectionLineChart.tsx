@@ -14,6 +14,15 @@ import {
 import type { TrajectoryPoint } from '@/types/agent'
 import { formatCurrency, formatCurrencyFull, COLORS } from '@/lib/canvas/format'
 
+const TICK_STYLE = { fontSize: 11, fill: '#8B8FA8' }
+const TOOLTIP_STYLE = {
+  backgroundColor: '#16181F',
+  border: '1px solid rgba(255,255,255,0.1)',
+  borderRadius: '8px',
+  fontSize: '12px',
+  color: '#F0F2F5',
+}
+
 interface Props {
   trajectory: TrajectoryPoint[]
   depletionAge: number | null
@@ -36,12 +45,12 @@ export function ProjectionLineChart({ trajectory, depletionAge }: Props) {
           <CartesianGrid strokeDasharray="3 3" stroke={COLORS.grid} />
           <XAxis
             dataKey="age"
-            tick={{ fontSize: 12, fill: '#64748B' }}
-            label={{ value: 'Age', position: 'insideBottomRight', offset: -4, fontSize: 12, fill: '#64748B' }}
+            tick={TICK_STYLE}
+            label={{ value: 'Age', position: 'insideBottomRight', offset: -4, fontSize: 11, fill: '#8B8FA8' }}
           />
           <YAxis
             tickFormatter={formatCurrency}
-            tick={{ fontSize: 12, fill: '#64748B' }}
+            tick={TICK_STYLE}
             width={60}
           />
           <Tooltip
@@ -54,18 +63,13 @@ export function ProjectionLineChart({ trajectory, depletionAge }: Props) {
                   : 'Net Worth',
             ]) as never}
             labelFormatter={((label: string) => `Age ${label}`) as never}
-            contentStyle={{
-              backgroundColor: 'white',
-              border: '1px solid #E2E8F0',
-              borderRadius: '8px',
-              fontSize: '13px',
-            }}
+            contentStyle={TOOLTIP_STYLE}
           />
           <Area
             type="monotone"
             dataKey="age_pension"
             fill={COLORS.pensionArea}
-            fillOpacity={0.3}
+            fillOpacity={0.15}
             stroke={COLORS.pensionArea}
             strokeWidth={1}
             name="age_pension"

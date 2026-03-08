@@ -16,6 +16,7 @@ const REQUIRED_VARIABLES: Record<string, string[]> = {
     'date_of_birth_year',
     'income',
     'super_balance',
+    'intended_retirement_age',
   ],
   super_longevity: [
     'date_of_birth_year',
@@ -42,7 +43,6 @@ const REQUIRED_VARIABLES: Record<string, string[]> = {
     'income',
     'super_balance',
     'intended_retirement_age',
-    'expenses',
   ],
   fee_impact: [
     'super_balance',

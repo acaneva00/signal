@@ -136,6 +136,25 @@ export async function POST(request: Request) {
     // ── Run orchestrator ─────────────────────────────────────────────────
     const result = await runChat(message, profileData, conversationHistory);
 
+    // ── Persist profile updates from overrides (e.g. target_age → intended_retirement_age)
+    if (Object.keys(result.profile_updates).length > 0) {
+      const updatedData = { ...profileData, ...result.profile_updates };
+      if (profile) {
+        await supabase
+          .from('financial_profiles')
+          .update({ profile_data: updatedData })
+          .eq('user_id', user.id);
+      } else {
+        await supabase.from('financial_profiles').insert({
+          user_id: user.id,
+          profile_data: updatedData,
+          self_assessments: {},
+          engaged_domains: {},
+          fact_find_data: {},
+        });
+      }
+    }
+
     // ── Save assistant message ───────────────────────────────────────────
     await supabase.from('messages').insert({
       conversation_id: conversationId,
