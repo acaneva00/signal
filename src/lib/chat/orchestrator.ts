@@ -30,6 +30,12 @@ import {
   resolveProfileField,
   OVERRIDE_TO_PROFILE_FIELD,
 } from './scenario-builder';
+import {
+  CALCULATION_INTENT_NAMES,
+  FULL_LIFECYCLE_INTENTS,
+  buildIntentPromptBlock,
+  isCalculationIntent,
+} from '@/lib/intents';
 
 // ── Public Types ─────────────────────────────────────────────────────────────
 
@@ -75,16 +81,7 @@ const TOOLS: Anthropic.Tool[] = [
       properties: {
         intent: {
           type: 'string',
-          enum: [
-            'super_at_age',
-            'super_longevity',
-            'take_home_pay',
-            'aged_pension',
-            'compare_retirement_age',
-            'fee_impact',
-            'extra_mortgage_payment',
-            'household_net_worth',
-          ],
+          enum: [...CALCULATION_INTENT_NAMES],
           description: 'The classified financial intent',
         },
         planned_overrides: {
@@ -455,15 +452,7 @@ YOUR ROLE:
 - You NEVER perform arithmetic, rounding, inflation adjustment, or any other transformation on engine output — quote the engine's numbers exactly as returned
 
 INTENTS:
-- super_at_age: Super balance at a specific age ("How much super will I have at 67?")
-- super_longevity: Whether super lasts through retirement ("Will my super last?")
-- take_home_pay: Take-home pay calculation ("What's my take-home pay?")
-- aged_pension: Age pension eligibility and amount ("Will I get the aged pension?")
-- compare_retirement_age: Compare retirement ages ("Retire at 60 vs 67?")
-- fee_impact: Impact of super fund fees over time
-- extra_mortgage_payment: Impact of extra mortgage payments
-- household_net_worth: Household net worth projection
-- education: General financial question — answer directly without the engine
+${buildIntentPromptBlock()}
 
 WORKFLOW:
 1. Classify the user's intent
@@ -565,11 +554,6 @@ interface ToolContext {
 }
 
 // ── Projection Scope ─────────────────────────────────────────────────────────
-// Only super_longevity models the full retirement/drawdown phase (it requires
-// expenses). All other intents project the accumulation phase only, ending at
-// the target or retirement age.
-
-const FULL_LIFECYCLE_INTENTS = new Set(['super_longevity']);
 
 /**
  * Determine projection_years based on intent. Accumulation-only intents stop
@@ -958,7 +942,7 @@ export async function runChat(
   return {
     message: messageText,
     agent_used:
-      ctx.classifiedIntent && ctx.classifiedIntent !== 'education'
+      ctx.classifiedIntent && isCalculationIntent(ctx.classifiedIntent)
         ? 'calculation'
         : 'education',
     intent_classified: ctx.classifiedIntent,

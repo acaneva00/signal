@@ -8,61 +8,7 @@
 import { z } from 'zod';
 import { ScenarioSchema, type ProjectionResult } from './models';
 import { project } from './engine';
-
-// ── Intent → Required Profile Fields ─────────────────────────────────────────
-
-const REQUIRED_VARIABLES: Record<string, string[]> = {
-  super_at_age: [
-    'date_of_birth_year',
-    'income',
-    'super_balance',
-    'intended_retirement_age',
-  ],
-  super_longevity: [
-    'date_of_birth_year',
-    'income',
-    'super_balance',
-    'intended_retirement_age',
-    'expenses',
-    'is_homeowner',
-  ],
-  take_home_pay: [
-    'income',
-    'has_hecs_help_debt',
-    'hecs_help_balance',
-  ],
-  aged_pension: [
-    'date_of_birth_year',
-    'relationship_status',
-    'is_homeowner',
-    'assets',
-    'super_balance',
-  ],
-  compare_retirement_age: [
-    'date_of_birth_year',
-    'income',
-    'super_balance',
-    'intended_retirement_age',
-  ],
-  fee_impact: [
-    'super_balance',
-    'super_fees',
-  ],
-  extra_mortgage_payment: [
-    'mortgage_balance',
-    'mortgage_rate',
-    'mortgage_repayment',
-  ],
-  household_net_worth: [
-    'date_of_birth_year',
-    'relationship_status',
-    'income',
-    'expenses',
-    'assets',
-    'super_balance',
-    'liabilities',
-  ],
-};
+import { getRequiredFields } from '@/lib/intents';
 
 // ── Result Types ─────────────────────────────────────────────────────────────
 
@@ -214,7 +160,7 @@ export function compareScenarios(scenarios: unknown[]): ComparisonResult {
  * Returns an empty array for unknown intents.
  */
 export function getRequiredVariables(intent: string): string[] {
-  return REQUIRED_VARIABLES[intent] ?? [];
+  return getRequiredFields(intent);
 }
 
 // ── createSummary ────────────────────────────────────────────────────────────

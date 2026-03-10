@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
@@ -11,6 +11,8 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 
 export default function SignupPage() {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const fromOnboarding = searchParams.get('from') === 'onboarding'
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [displayName, setDisplayName] = useState('')
@@ -43,6 +45,7 @@ export default function SignupPage() {
         data: {
           display_name: displayName,
         },
+        emailRedirectTo: `${window.location.origin}/auth/callback`,
       },
     })
 
@@ -64,6 +67,11 @@ export default function SignupPage() {
           <CardDescription>
             Enter your details to get started with Signal
           </CardDescription>
+          {fromOnboarding && (
+            <p className="text-[13px] text-blue-500 mt-2">
+              Your quiz results will be saved automatically.
+            </p>
+          )}
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSignup} className="space-y-4">

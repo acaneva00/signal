@@ -12,6 +12,7 @@ import { BalanceSheetCards } from './BalanceSheetCards'
 import { ForecastTable } from './ForecastTable'
 import { ProfileCompleteness } from './ProfileCompleteness'
 import { EmptyCanvas } from './EmptyCanvas'
+import { getCanvasFlags } from '@/lib/intents'
 
 export interface CanvasProps {
   projectionSummary: ProjectionSummary | null
@@ -34,10 +35,11 @@ export function Canvas({
   const hasComparison = comparisonResult !== null
   const hasContent = hasProjection || hasComparison
 
-  const showFeeImpact = hasComparison && intent === 'fee_impact'
-  const showTaxWaterfall = hasProjection && intent === 'take_home_pay'
-  const showCashFlow = hasProjection && (intent === 'household_net_worth' || intent === 'super_longevity')
-  const showBalanceSheet = hasProjection && intent === 'household_net_worth'
+  const canvasFlags = getCanvasFlags(intent)
+  const showFeeImpact = hasComparison && canvasFlags.showFeeImpact
+  const showTaxWaterfall = hasProjection && canvasFlags.showTaxWaterfall
+  const showCashFlow = hasProjection && canvasFlags.showCashFlow
+  const showBalanceSheet = hasProjection && canvasFlags.showBalanceSheet
   const showForecastTable = hasProjection && projectionSummary!.yearly_detail.length > 3
 
   return (

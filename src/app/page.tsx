@@ -10,6 +10,6 @@ export default async function Home() {
   if (user) {
     redirect('/chat')
   } else {
-    redirect('/login')
+    redirect('/onboarding')
   }
 }

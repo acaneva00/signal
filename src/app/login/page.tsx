@@ -139,11 +139,17 @@ export default function LoginPage() {
             Sign in with Google
           </Button>
         </CardContent>
-        <CardFooter className="flex justify-center">
+        <CardFooter className="flex flex-col items-center gap-3">
           <p className="text-sm text-slate-600">
-            Don't have an account?{' '}
+            Don&apos;t have an account?{' '}
             <Link href="/signup" className="font-medium text-blue-600 hover:text-blue-500">
               Sign up
+            </Link>
+          </p>
+          <p className="text-xs text-slate-500">
+            Not sure yet?{' '}
+            <Link href="/onboarding" className="underline decoration-transparent hover:decoration-slate-400 transition-all">
+              Take a 2-minute quiz to see what Signal can do for you
             </Link>
           </p>
         </CardFooter>

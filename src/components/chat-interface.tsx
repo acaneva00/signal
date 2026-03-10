@@ -6,6 +6,7 @@ import { ArrowUp, Plus, RotateCcw } from 'lucide-react'
 import { StructuredInput } from '@/components/chat/StructuredInput'
 import { Canvas } from '@/components/canvas/Canvas'
 import type { InputRequest, StructuredResponse, ProjectionSummary, ComparisonResult } from '@/types/agent'
+import { INTENT_CHIP_LABELS } from '@/lib/onboarding/intent-chip-labels'
 
 type Message = {
   id: string
@@ -128,6 +129,31 @@ export function ChatInterface() {
             }
           }
           setAnsweredInputs(answered)
+        } else {
+          try {
+            const greetingRes = await fetch('/api/profile/onboarding-greeting')
+            if (greetingRes.ok) {
+              const greetingData = await greetingRes.json()
+              if (greetingData.greeting) {
+                const chipOptions = ((greetingData.suggested_intents ?? []) as string[])
+                  .map((key: string) => INTENT_CHIP_LABELS[key as keyof typeof INTENT_CHIP_LABELS])
+                  .filter(Boolean)
+                  .map((label: string) => ({ label, value: label }))
+
+                const personalised: Message = {
+                  ...WELCOME_MESSAGE,
+                  content: greetingData.greeting,
+                  input_request: chipOptions.length > 0
+                    ? { ...WELCOME_MESSAGE.input_request!, options: chipOptions }
+                    : WELCOME_MESSAGE.input_request,
+                }
+                setMessages([personalised])
+                return
+              }
+            }
+          } catch {
+            // Fall through to default welcome
+          }
         }
       }
     } catch (error) {
