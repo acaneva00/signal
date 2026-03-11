@@ -5,7 +5,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { ArrowUp, Plus, RotateCcw } from 'lucide-react'
 import { StructuredInput } from '@/components/chat/StructuredInput'
 import { Canvas } from '@/components/canvas/Canvas'
-import type { InputRequest, StructuredResponse, ProjectionSummary, ComparisonResult } from '@/types/agent'
+import type { InputRequest, StructuredResponse, ProjectionSummary, ComparisonResult, FeeBreakdownComparison } from '@/types/agent'
 import { INTENT_CHIP_LABELS } from '@/lib/onboarding/intent-chip-labels'
 
 type Message = {
@@ -19,6 +19,7 @@ type Message = {
 interface CanvasData {
   projectionSummary: ProjectionSummary | null
   comparisonResult: ComparisonResult | null
+  feeBreakdownComparison: FeeBreakdownComparison | null
   intent: string | null
   assumptions: string[]
   disclaimers: string[]
@@ -27,6 +28,7 @@ interface CanvasData {
 const EMPTY_CANVAS: CanvasData = {
   projectionSummary: null,
   comparisonResult: null,
+  feeBreakdownComparison: null,
   intent: null,
   assumptions: [],
   disclaimers: [],
@@ -295,6 +297,7 @@ export function ChatInterface() {
     intent_classified?: string | null
     projection_summary?: ProjectionSummary | null
     comparison_result?: ComparisonResult | null
+    fee_breakdown_comparison?: FeeBreakdownComparison | null
     assumptions?: string[]
     disclaimers?: string[]
     input_request?: InputRequest | null
@@ -308,10 +311,11 @@ export function ChatInterface() {
     }
     setMessages((prev) => [...prev, assistantMsg])
 
-    if (data.projection_summary || data.comparison_result) {
+    if (data.projection_summary || data.comparison_result || data.fee_breakdown_comparison) {
       setCanvasData({
         projectionSummary: data.projection_summary ?? null,
         comparisonResult: data.comparison_result ?? null,
+        feeBreakdownComparison: data.fee_breakdown_comparison ?? null,
         intent: data.intent_classified ?? null,
         assumptions: data.assumptions ?? [],
         disclaimers: data.disclaimers ?? [],
@@ -352,7 +356,7 @@ export function ChatInterface() {
   )
 
   const profileCompleteness = Math.min(profileFieldCount / PROFILE_FIELDS.length, 1)
-  const hasCanvasContent = canvasData.projectionSummary !== null || canvasData.comparisonResult !== null
+  const hasCanvasContent = canvasData.projectionSummary !== null || canvasData.comparisonResult !== null || canvasData.feeBreakdownComparison !== null
   const canSend = input.trim() && !isLoading && !hasActiveStructuredInput
 
   return (
@@ -717,6 +721,7 @@ export function ChatInterface() {
           <Canvas
             projectionSummary={canvasData.projectionSummary}
             comparisonResult={canvasData.comparisonResult}
+            feeBreakdownComparison={canvasData.feeBreakdownComparison}
             intent={canvasData.intent}
             assumptions={canvasData.assumptions}
             disclaimers={canvasData.disclaimers}

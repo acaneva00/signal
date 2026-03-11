@@ -176,6 +176,7 @@ export async function POST(request: Request) {
       projection_result: result.projection_result,
       projection_summary: result.projection_summary,
       comparison_result: result.comparison_result,
+      fee_breakdown_comparison: result.fee_breakdown_comparison,
       assumptions: result.assumptions,
       disclaimers: result.disclaimers,
       input_request: result.input_request,

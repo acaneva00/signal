@@ -20,7 +20,7 @@ import {
   type ComparisonResult,
 } from '@/engine/api';
 import type { ProjectionResult } from '@/engine/models';
-import type { InputRequest } from '@/types/agent';
+import type { InputRequest, FundFeeBreakdown, FeeBreakdownComparison } from '@/types/agent';
 import {
   type ProfileData,
   type ScenarioOverrides,
@@ -37,7 +37,7 @@ import {
   isCalculationIntent,
 } from '@/lib/intents';
 import { findProduct } from '@/lib/products/product-lookup';
-import { calculateAnnualFee } from '@/lib/products/fee-calculator';
+import { calculateAnnualFee, decomposeFeeComponents } from '@/lib/products/fee-calculator';
 import type { FeeStructure, InvestmentOption } from '@/lib/products/fee-calculator';
 
 // ── Public Types ─────────────────────────────────────────────────────────────
@@ -54,6 +54,7 @@ export interface ChatResult {
   projection_result: ProjectionResult | null;
   projection_summary: ProjectionSummary | null;
   comparison_result: ComparisonResult | null;
+  fee_breakdown_comparison: FeeBreakdownComparison | null;
   assumptions: string[];
   disclaimers: string[];
   input_request: InputRequest | null;
@@ -673,6 +674,7 @@ interface ToolContext {
   lastInputRequest: InputRequest | null;
   classifiedIntent: string | null;
   lastOverrides: ScenarioOverrides | null;
+  searchProductResults: Array<{ product: Record<string, unknown>; fee_at_balance: number }>;
 }
 
 // ── Projection Scope ─────────────────────────────────────────────────────────
@@ -928,6 +930,52 @@ function getCommonOverrideSatisfiedFields(
   return common;
 }
 
+// ── Fee Breakdown Builder ─────────────────────────────────────────────────
+// Delegates to decomposeFeeComponents (fee-calculator.ts) — the single
+// source of truth for all fee arithmetic and percentage conventions.
+
+function buildFeeBreakdown(
+  product: Record<string, unknown>,
+  balanceUsed: number,
+  birthYear?: number,
+): FundFeeBreakdown {
+  const feeStructure: FeeStructure = {
+    ...(product.fee_structure as FeeStructure),
+    investment_options: (product.investment_options as InvestmentOption[]) ?? [],
+  };
+
+  const { components, resolvedOptionName } = decomposeFeeComponents(
+    feeStructure, balanceUsed, undefined, birthYear,
+  );
+  const totalAnnualFee = components.reduce((sum, c) => sum + c.annual_dollar, 0);
+
+  const investmentOptions = (product.investment_options ?? []) as Array<Record<string, unknown>>;
+
+  // Find the option that was actually resolved (by name match) so the card
+  // label, fee rate, and allocation percentages all come from the same entry.
+  let matchedOption: Record<string, unknown> | undefined;
+  if (resolvedOptionName) {
+    matchedOption = investmentOptions.find(
+      (o) => (o.name as string) === resolvedOptionName,
+    );
+  }
+  const displayOption = matchedOption ?? investmentOptions[0] as Record<string, unknown> | undefined;
+
+  const optionName = resolvedOptionName
+    ?? (displayOption?.option_name ?? displayOption?.name ?? 'Balanced') as string;
+  const growthPct = (displayOption?.growth_pct ?? 70) as number;
+  const defensivePct = (displayOption?.defensive_pct ?? (100 - growthPct)) as number;
+
+  return {
+    fund_name: (product.fund_name ?? product.name ?? 'Unknown Fund') as string,
+    investment_option: optionName,
+    growth_pct: growthPct,
+    defensive_pct: defensivePct,
+    total_annual_fee: Math.round(totalAnnualFee * 100) / 100,
+    fee_components: components,
+  };
+}
+
 async function handleSearchProducts(
   input: { fund_name: string },
   ctx: ToolContext,
@@ -948,6 +996,12 @@ async function handleSearchProducts(
   };
 
   const fee = calculateAnnualFee(feeStructure, balance, undefined, birthYear);
+
+  ctx.searchProductResults.push({
+    product: product as unknown as Record<string, unknown>,
+    fee_at_balance: fee,
+  });
+
   return {
     found: true,
     product,
@@ -1047,6 +1101,7 @@ export async function runChat(
     lastInputRequest: null,
     classifiedIntent: null,
     lastOverrides: null,
+    searchProductResults: [],
   };
 
   let response = await anthropic.messages.create({
@@ -1100,6 +1155,36 @@ export async function runChat(
   const hasProjection = ctx.lastProjectionResult !== null;
   const hasComparison = ctx.lastComparisonResult !== null;
 
+  let feeBreakdownComparison: FeeBreakdownComparison | null = null;
+  if (
+    ctx.classifiedIntent === 'compare_fund' &&
+    ctx.searchProductResults.length >= 2
+  ) {
+    const balance =
+      (ctx.profileData.super_balance as number | undefined) ?? 50_000;
+    const birthYear =
+      ctx.profileData.date_of_birth_year as number | undefined;
+    feeBreakdownComparison = {
+      funds: ctx.searchProductResults.map((r) =>
+        buildFeeBreakdown(r.product, balance, birthYear),
+      ),
+      balance_used: balance,
+    };
+
+    if (process.env.NODE_ENV === 'development') {
+      for (let i = 0; i < feeBreakdownComparison.funds.length; i++) {
+        const engineTotal = ctx.searchProductResults[i].fee_at_balance;
+        const chartTotal = feeBreakdownComparison.funds[i].total_annual_fee;
+        if (Math.abs(engineTotal - chartTotal) > 0.01) {
+          console.error(
+            `[FeeBreakdown] MISMATCH for ${feeBreakdownComparison.funds[i].fund_name}: ` +
+            `engine=${engineTotal}, chart=${chartTotal}`,
+          );
+        }
+      }
+    }
+  }
+
   return {
     message: messageText,
     agent_used:
@@ -1110,9 +1195,10 @@ export async function runChat(
     projection_result: ctx.lastProjectionResult,
     projection_summary: ctx.lastProjectionSummary,
     comparison_result: ctx.lastComparisonResult,
+    fee_breakdown_comparison: feeBreakdownComparison,
     assumptions,
     disclaimers:
-      hasProjection || hasComparison
+      hasProjection || hasComparison || feeBreakdownComparison
         ? [
             'This is a projection based on assumptions, not financial advice. ' +
               'Consider speaking to a licensed financial adviser for personal advice.',

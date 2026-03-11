@@ -1,11 +1,12 @@
 'use client'
 
 import { ScrollArea } from '@/components/ui/scroll-area'
-import type { ProjectionSummary, ComparisonResult } from '@/types/agent'
+import type { ProjectionSummary, ComparisonResult, FeeBreakdownComparison } from '@/types/agent'
 import { ProjectionLineChart } from './ProjectionLineChart'
 import { ProjectionSummaryCard } from './ProjectionSummaryCard'
 import { ScenarioComparisonChart } from './ScenarioComparisonChart'
 import { FeeImpactBarChart } from './FeeImpactBarChart'
+import { FeeBreakdownChart } from './FeeBreakdownChart'
 import { TaxBreakdownWaterfall } from './TaxBreakdownWaterfall'
 import { CashFlowWaterfall } from './CashFlowWaterfall'
 import { BalanceSheetCards } from './BalanceSheetCards'
@@ -17,6 +18,7 @@ import { getCanvasFlags } from '@/lib/intents'
 export interface CanvasProps {
   projectionSummary: ProjectionSummary | null
   comparisonResult: ComparisonResult | null
+  feeBreakdownComparison: FeeBreakdownComparison | null
   intent: string | null
   assumptions: string[]
   disclaimers: string[]
@@ -26,6 +28,7 @@ export interface CanvasProps {
 export function Canvas({
   projectionSummary,
   comparisonResult,
+  feeBreakdownComparison,
   intent,
   assumptions,
   disclaimers,
@@ -33,10 +36,11 @@ export function Canvas({
 }: CanvasProps) {
   const hasProjection = projectionSummary !== null
   const hasComparison = comparisonResult !== null
-  const hasContent = hasProjection || hasComparison
+  const hasFeeBreakdown = feeBreakdownComparison !== null
+  const hasContent = hasProjection || hasComparison || hasFeeBreakdown
 
   const canvasFlags = getCanvasFlags(intent)
-  const showFeeImpact = hasComparison && canvasFlags.showFeeImpact
+  const showFeeImpact = hasComparison && canvasFlags.showFeeImpact && !hasFeeBreakdown
   const showTaxWaterfall = hasProjection && canvasFlags.showTaxWaterfall
   const showCashFlow = hasProjection && canvasFlags.showCashFlow
   const showBalanceSheet = hasProjection && canvasFlags.showBalanceSheet
@@ -57,6 +61,10 @@ export function Canvas({
 
             {showFeeImpact && (
               <FeeImpactBarChart comparison={comparisonResult!} />
+            )}
+
+            {hasFeeBreakdown && (
+              <FeeBreakdownChart data={feeBreakdownComparison!} />
             )}
 
             {hasProjection && !hasComparison && (

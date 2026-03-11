@@ -12,10 +12,33 @@ import type {
 
 export type { ProjectionSummary, ComparisonResult, TrajectoryPoint, YearlyDetail }
 
+export interface FeeComponent {
+  label: string
+  annual_dollar: number
+  basis: string
+  type: 'flat' | 'percentage'
+}
+
+export interface FundFeeBreakdown {
+  fund_name: string
+  investment_option: string
+  growth_pct: number
+  defensive_pct: number
+  total_annual_fee: number
+  fee_components: FeeComponent[]
+}
+
+export interface FeeBreakdownComparison {
+  funds: FundFeeBreakdown[]
+  balance_used: number
+  projection_diff?: number
+}
+
 export type CanvasPanel =
   | { type: 'projection_chart'; summary: ProjectionSummary; assumptions: string[] }
   | { type: 'scenario_comparison'; comparison: ComparisonResult; assumptions: string[] }
   | { type: 'fee_impact'; comparison: ComparisonResult }
+  | { type: 'fee_breakdown'; data: FeeBreakdownComparison }
   | { type: 'tax_breakdown'; detail: YearlyDetail }
   | { type: 'cash_flow'; detail: YearlyDetail }
   | { type: 'balance_sheet'; summary: ProjectionSummary }
