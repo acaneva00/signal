@@ -4,6 +4,13 @@ export interface AdminFeeTier {
   rate_pct: number;
 }
 
+export interface InvestmentOption {
+  name: string;
+  investment_fee_pct?: number;
+  total_fee_pct?: number;
+  description?: string;
+}
+
 export interface FeeStructure {
   admin_fee_pa?: number;
   admin_fee_pct?: number;
@@ -18,6 +25,101 @@ export interface FeeStructure {
   orfr_pct?: number;
   expense_recovery_pct?: number;
   notes?: string;
+  investment_options?: InvestmentOption[];
+}
+
+const YEAR_PATTERN = /\d{4}[–\-+s]/;
+const BORN_PATTERN = /born\s+\d{4}/i;
+
+function isLifestageOption(name: string): boolean {
+  return YEAR_PATTERN.test(name) || BORN_PATTERN.test(name);
+}
+
+function matchesBirthYear(optionName: string, birthYear: number): boolean {
+  const decadeMatch = optionName.match(/(\d{4})s\b/);
+  if (decadeMatch) {
+    const start = parseInt(decadeMatch[1]);
+    return birthYear >= start && birthYear <= start + 9;
+  }
+
+  const rangeMatch = optionName.match(/(\d{4})[–\-](\d{2,4})/);
+  if (rangeMatch) {
+    const start = parseInt(rangeMatch[1]);
+    let end = parseInt(rangeMatch[2]);
+    if (end < 100) end += Math.floor(start / 100) * 100;
+    return birthYear >= start && birthYear <= end;
+  }
+
+  const plusMatch = optionName.match(/(\d{4})\+/);
+  if (plusMatch) {
+    return birthYear >= parseInt(plusMatch[1]);
+  }
+
+  return false;
+}
+
+/**
+ * Resolve the investment fee percentage for a named option.
+ * For Lifestage-style options (names containing year ranges), birthYear
+ * is required to select the correct cohort.
+ */
+function resolveInvestmentFeePct(
+  options: InvestmentOption[],
+  optionName: string,
+  adminFeePct: number,
+  birthYear?: number,
+): number {
+  const lower = optionName.toLowerCase();
+
+  const exactMatch = options.find(
+    (o) => o.name.toLowerCase() === lower,
+  );
+  if (exactMatch) {
+    return exactMatch.investment_fee_pct ?? deriveInvestmentFee(exactMatch, adminFeePct);
+  }
+
+  const lifestageMatches = options.filter((o) => isLifestageOption(o.name));
+  const hasLifestageOptions = lifestageMatches.length > 0;
+
+  const partialMatch = options.find(
+    (o) => o.name.toLowerCase().startsWith(lower) ||
+           o.name.toLowerCase().includes(`${lower} `) ||
+           o.name.toLowerCase().includes(`${lower}(`),
+  );
+
+  if (partialMatch && !isLifestageOption(partialMatch.name)) {
+    return partialMatch.investment_fee_pct ?? deriveInvestmentFee(partialMatch, adminFeePct);
+  }
+
+  if (hasLifestageOptions && lifestageMatches.some(
+    (o) => o.name.toLowerCase().startsWith(lower),
+  )) {
+    if (birthYear == null) {
+      throw new Error(
+        `birthYear is required to select the correct Lifestage cohort for "${optionName}"`,
+      );
+    }
+    const cohort = lifestageMatches.find((o) => matchesBirthYear(o.name, birthYear));
+    if (!cohort) {
+      throw new Error(
+        `No Lifestage cohort matches birth year ${birthYear} for "${optionName}"`,
+      );
+    }
+    return cohort.investment_fee_pct ?? deriveInvestmentFee(cohort, adminFeePct);
+  }
+
+  if (partialMatch) {
+    return partialMatch.investment_fee_pct ?? deriveInvestmentFee(partialMatch, adminFeePct);
+  }
+
+  throw new Error(`Investment option "${optionName}" not found`);
+}
+
+function deriveInvestmentFee(option: InvestmentOption, adminFeePct: number): number {
+  if (option.total_fee_pct != null) {
+    return Math.max(option.total_fee_pct - adminFeePct, 0);
+  }
+  return 0;
 }
 
 /**
@@ -28,8 +130,18 @@ export interface FeeStructure {
  *   2. Percentage-based admin fee — either flat (admin_fee_pct, capped at
  *      admin_fee_cap_pa) or tiered (admin_fee_tiers). Tiers take precedence.
  *   3. Investment fee (investment_fee_default_pct × balance)
+ *
+ * When investmentOption is specified, the investment fee is resolved from
+ * the matching entry in investment_options instead of the default. For
+ * Lifestage-style funds (options with year ranges in names), birthYear
+ * is required to select the correct cohort — omitting it throws.
  */
-export function calculateAnnualFee(feeStructure: FeeStructure, balance: number): number {
+export function calculateAnnualFee(
+  feeStructure: FeeStructure,
+  balance: number,
+  investmentOption?: string,
+  birthYear?: number,
+): number {
   let total = 0;
 
   total += feeStructure.admin_fee_pa ?? 0;
@@ -49,8 +161,19 @@ export function calculateAnnualFee(feeStructure: FeeStructure, balance: number):
     total += pctFee;
   }
 
-  if (feeStructure.investment_fee_default_pct != null) {
-    total += (feeStructure.investment_fee_default_pct / 100) * balance;
+  let investmentFeePct = feeStructure.investment_fee_default_pct;
+
+  if (investmentOption && feeStructure.investment_options?.length) {
+    investmentFeePct = resolveInvestmentFeePct(
+      feeStructure.investment_options,
+      investmentOption,
+      feeStructure.admin_fee_pct ?? 0,
+      birthYear,
+    );
+  }
+
+  if (investmentFeePct != null) {
+    total += (investmentFeePct / 100) * balance;
   }
 
   return Math.max(total, 0);

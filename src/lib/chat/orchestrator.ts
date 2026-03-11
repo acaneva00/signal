@@ -38,7 +38,7 @@ import {
 } from '@/lib/intents';
 import { findProduct } from '@/lib/products/product-lookup';
 import { calculateAnnualFee } from '@/lib/products/fee-calculator';
-import type { FeeStructure } from '@/lib/products/fee-calculator';
+import type { FeeStructure, InvestmentOption } from '@/lib/products/fee-calculator';
 
 // ── Public Types ─────────────────────────────────────────────────────────────
 
@@ -63,7 +63,7 @@ export interface ChatResult {
 // ── Config ───────────────────────────────────────────────────────────────────
 
 const MODEL = process.env.CLAUDE_MODEL ?? 'claude-sonnet-4-20250514';
-const MAX_TOOL_ITERATIONS = 5;
+const MAX_TOOL_ITERATIONS = 10;
 const CONTEXT_MESSAGE_LIMIT = 20;
 
 // ── Tool Definitions ─────────────────────────────────────────────────────────
@@ -489,11 +489,20 @@ ${buildIntentPromptBlock()}
 
 COMPARE_FUND INTENT:
 When intent is compare_fund:
-1. Call get_required_fields with intent "compare_fund" first (it requires super_fund_name and super_balance).
-2. If super_fund_name is missing, you MUST ask exactly: "Which super fund are you currently with?" and STOP. Do NOT call search_products or run any comparison until super_fund_name is known.
-3. Once super_fund_name is in the profile, call search_products TWICE — once for the user's fund, once for the comparison target (or "the market" if none specified).
-4. Never ask for super_fund_name more than once — once collected it is saved to the profile.
-5. When the user states their fund name (e.g. "I'm with Hostplus"), extract it into super_fund_name via extracted_profile_data on your next tool call.
+1. On EVERY turn, call get_required_fields with intent "compare_fund" and pass ALL extracted_profile_data collected so far. This is mandatory — it saves data to the profile AND returns the input widget for the next missing field. Never skip this call.
+2. If super_fund_name is missing, ask exactly: "Which super fund are you currently with?" and STOP.
+3. If date_of_birth_year is missing, ask for it next. It is needed to select the correct Lifestage cohort for funds that use age-based investment options (e.g. CFS FirstChoice, AMP, ART). STOP after asking.
+4. If super_balance is missing, ask for it next. STOP after asking.
+5. Do NOT call search_products or run any comparison until get_required_fields returns zero missing fields.
+6. Once all required fields are present, call search_products TWICE — once for the user's fund, once for the comparison target (or "the market" if none specified).
+7. Never ask for super_fund_name more than once — once collected it is saved to the profile.
+8. When the user states their fund name (e.g. "I'm with Hostplus"), extract it into super_fund_name via extracted_profile_data on your next get_required_fields call.
+
+INVESTMENT OPTION CONSISTENCY:
+- On the first comparison, state the investment option assumed for each fund (e.g. "Assumes Balanced for both funds.").
+- Store the assumed option as the comparison_investment_option for this conversation.
+- On subsequent comparisons in the same session, reuse the same investment option unless the user explicitly changes it.
+- If the user changes the option (e.g. "show me high growth"), explicitly state: "Switching to [option] — recalculating both funds on that basis." before presenting the updated comparison.
 
 COMPARE_FUND RESPONSE FORMAT — MANDATORY:
 When presenting a fund comparison result, use this EXACT structure and nothing else:
@@ -505,15 +514,66 @@ When presenting a fund comparison result, use this EXACT structure and nothing e
 ─────────────────────────────────
 Difference        $[gap] p.a.
 
+Assumes [option name] for both funds.
 [One sentence: what this means for the user.]
-
 [One sentence disclaimer: general information only, not advice.]
+
+RANKED COMPARISON FORMAT — MANDATORY:
+When the user asks which fund is cheapest, or requests a multi-fund ranking, use this EXACT structure:
+
+[Option name] options — ranked by annual fee at $[balance]
+
+1. [Fund]     $[fee] p.a.
+2. [Fund]     $[fee] p.a.
+3. [Fund]     $[fee] p.a.
+──────────────────────────
+Your fund     $[fee] p.a.
+
+[One sentence: the saving from switching to #1.]
+[One sentence disclaimer.]
+
+No bullet points. No inline calculations. No footnotes unless the user asks.
 
 Rules for compare_fund responses:
 - Never more than 2 sentences of prose below the fee table
 - Do not explain fee structure components unless the user asks
 - Do not list caveats about performance, insurance, or other factors unless the user asks
 - The disclaimer must be one sentence maximum, at the bottom
+
+FEE BREAKDOWN FORMAT:
+When the user asks how fees are calculated, what the components are, or for a breakdown, construct it from the fee_structure fields returned by search_products.
+
+For funds with a flat fee structure, use this format:
+
+[Fund name] fee breakdown at $[balance]
+
+Fixed admin fee:       $[admin_fee_pa] p.a.
+Admin fee (%):         [admin_fee_pct]% = $[calculated] p.a. [capped at $[admin_fee_cap_pa] if applicable]
+Investment fee:        [investment_fee_pct]% = $[calculated] p.a.
+─────────────────────────────────────────────
+Total:                 $[fee_at_balance] p.a.
+
+For funds with admin_fee_tiers (wrap platforms), use this format:
+
+[Fund name] fee breakdown at $[balance]
+
+Admin fee (tiered):
+  First $[tier_1_to]    @ [rate]%  =  $[calculated] p.a.
+  Next  $[tier_2_slice] @ [rate]%  =  $[calculated] p.a.
+  Total admin fee                  =  $[sum] p.a.
+Investment fee:        0% (depends on underlying investments)
+─────────────────────────────────────────────
+Total:                 $[fee_at_balance] p.a.
+
+Rules for fee breakdowns:
+- ALL values MUST come from the fee_structure object in the search_products tool response — never state that fee component data is unavailable.
+- Do NOT say "I don't have access to the fee breakdown" — you do, it is in the tool response you just received.
+- Omit rows where the component is zero or absent (e.g. no fixed admin fee → skip that row).
+- If admin_fee_cap_pa applies and the % fee exceeds it, show the cap explicitly: "0.10% = $[uncapped] → capped at $[cap]"
+- If the fund uses admin_fee_tiers, list each tier that applies to the user's balance on its own row showing the slice amount, rate, and dollar result.
+- Show the investment option used and note if it differs from the default.
+- Show both funds if the user asks for a breakdown after a two-fund comparison.
+- One sentence disclaimer at the bottom.
 
 WORKFLOW:
 1. Classify the user's intent
@@ -874,14 +934,26 @@ async function handleSearchProducts(
 ): Promise<Record<string, unknown>> {
   const balance =
     (ctx.profileData.super_balance as number | undefined) ?? 50_000;
+  const birthYear =
+    ctx.profileData.date_of_birth_year as number | undefined;
   const product = await findProduct(input.fund_name);
 
   if (!product) {
     return { found: false, product: null, fee_at_balance: 0 };
   }
 
-  const fee = calculateAnnualFee(product.fee_structure as FeeStructure, balance);
-  return { found: true, product, fee_at_balance: fee };
+  const feeStructure: FeeStructure = {
+    ...(product.fee_structure as FeeStructure),
+    investment_options: (product.investment_options as InvestmentOption[]) ?? [],
+  };
+
+  const fee = calculateAnnualFee(feeStructure, balance, undefined, birthYear);
+  return {
+    found: true,
+    product,
+    fee_at_balance: fee,
+    investment_options: feeStructure.investment_options,
+  };
 }
 
 async function executeToolCall(
@@ -1016,7 +1088,13 @@ export async function runChat(
   const textBlocks = response.content.filter(
     (block): block is Anthropic.Messages.TextBlock => block.type === 'text',
   );
-  const messageText = textBlocks.map((b) => b.text).join('\n');
+  let messageText = textBlocks.map((b) => b.text).join('\n');
+
+  if (!messageText && iterations >= MAX_TOOL_ITERATIONS && response.stop_reason === 'tool_use') {
+    messageText =
+      "I wasn't able to complete that comparison — I needed to look up too many funds at once. " +
+      'Try asking me to compare your fund with one or two specific funds instead.';
+  }
 
   const assumptions = buildAssumptionsList(ctx);
   const hasProjection = ctx.lastProjectionResult !== null;

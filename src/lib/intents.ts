@@ -143,7 +143,7 @@ export const INTENTS = {
     description:
       "User wants to compare their current super fund's fees with another fund or the market",
     exampleQuery: 'How does my super compare with AustralianSuper?',
-    requiredFields: ['super_fund_name', 'super_balance'],
+    requiredFields: ['super_fund_name', 'date_of_birth_year', 'super_balance'],
     fullLifecycle: false,
     category: 'calculation',
     canvas: { showFeeImpact: true },

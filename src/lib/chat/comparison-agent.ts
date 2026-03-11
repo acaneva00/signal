@@ -1,11 +1,12 @@
 import { findProduct } from '../products/product-lookup';
 import { calculateAnnualFee, industryAverageFee } from '../products/fee-calculator';
-import type { FeeStructure } from '../products/fee-calculator';
+import type { FeeStructure, InvestmentOption } from '../products/fee-calculator';
 import type { InputRequest } from '@/types/agent';
 
 interface ComparisonProfile {
   super_fund_name?: string;
   super_balance?: number;
+  date_of_birth_year?: number;
   [key: string]: unknown;
 }
 
@@ -55,17 +56,28 @@ export async function buildComparisonResponse(
   }
 
   const balance = (profile.super_balance as number) ?? DEFAULT_BALANCE;
+  const birthYear = profile.date_of_birth_year;
 
   const userFund = await findProduct(profile.super_fund_name);
   const targetName = extractComparisonTarget(message);
   const comparisonFund = await findProduct(targetName);
 
   const userFee = userFund
-    ? calculateAnnualFee(userFund.fee_structure as FeeStructure, balance)
+    ? calculateAnnualFee(
+        { ...(userFund.fee_structure as FeeStructure), investment_options: (userFund.investment_options as InvestmentOption[]) ?? [] },
+        balance,
+        undefined,
+        birthYear,
+      )
     : industryAverageFee(balance);
 
   const compFee = comparisonFund
-    ? calculateAnnualFee(comparisonFund.fee_structure as FeeStructure, balance)
+    ? calculateAnnualFee(
+        { ...(comparisonFund.fee_structure as FeeStructure), investment_options: (comparisonFund.investment_options as InvestmentOption[]) ?? [] },
+        balance,
+        undefined,
+        birthYear,
+      )
     : industryAverageFee(balance);
 
   return {
