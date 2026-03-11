@@ -138,6 +138,17 @@ export const INTENTS = {
     canvas: { showCashFlow: true, showBalanceSheet: true },
     plainEnglish: "What's my household net worth trajectory?",
   },
+  compare_fund: {
+    label: 'Compare super fund',
+    description:
+      "User wants to compare their current super fund's fees with another fund or the market",
+    exampleQuery: 'How does my super compare with AustralianSuper?',
+    requiredFields: ['super_fund_name', 'super_balance'],
+    fullLifecycle: false,
+    category: 'calculation',
+    canvas: { showFeeImpact: true },
+    plainEnglish: 'How do my super fund fees compare?',
+  },
   education: {
     label: 'General education',
     description: 'General financial question — answer directly without the engine',

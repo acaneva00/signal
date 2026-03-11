@@ -80,6 +80,7 @@ const SUPER_BAND_ESTIMATES: Record<string, number> = {
 // ── Field Priority (lower = ask first) ───────────────────────────────────────
 
 const FIELD_PRIORITY: Record<string, number> = {
+  super_fund_name: 0,
   date_of_birth_year: 1,
   income: 2,
   super_balance: 3,

@@ -28,7 +28,7 @@ export interface CanvasState {
 }
 
 export interface InputRequest {
-  type: 'numeric' | 'chips' | 'segmented'
+  type: 'numeric' | 'chips' | 'segmented' | 'text'
   field: string
   required: boolean
   label?: string
@@ -38,6 +38,7 @@ export interface InputRequest {
   format?: 'currency' | 'year' | 'age' | 'number'
   min?: number
   max?: number
+  autocomplete?: boolean
 }
 
 export interface AgentOutput {

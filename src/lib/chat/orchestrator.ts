@@ -36,6 +36,9 @@ import {
   buildIntentPromptBlock,
   isCalculationIntent,
 } from '@/lib/intents';
+import { findProduct } from '@/lib/products/product-lookup';
+import { calculateAnnualFee } from '@/lib/products/fee-calculator';
+import type { FeeStructure } from '@/lib/products/fee-calculator';
 
 // ── Public Types ─────────────────────────────────────────────────────────────
 
@@ -113,6 +116,7 @@ const TOOLS: Anthropic.Tool[] = [
             date_of_birth_year: { type: 'number', description: 'Year of birth (e.g. 1985)' },
             income: { type: 'number', description: 'Annual gross salary in dollars' },
             super_balance: { type: 'number', description: 'Current superannuation balance' },
+            super_fund_name: { type: 'string', description: "User's current super fund name (e.g. AustralianSuper, Hostplus)" },
             intended_retirement_age: { type: 'number', description: 'Target retirement age' },
             expenses: { type: 'number', description: 'Annual living expenses in dollars' },
             relationship_status: {
@@ -182,6 +186,7 @@ const TOOLS: Anthropic.Tool[] = [
             date_of_birth_year: { type: 'number' },
             income: { type: 'number' },
             super_balance: { type: 'number' },
+            super_fund_name: { type: 'string' },
             intended_retirement_age: { type: 'number' },
             expenses: { type: 'number' },
             relationship_status: { type: 'string' },
@@ -237,11 +242,38 @@ const TOOLS: Anthropic.Tool[] = [
       required: ['intent', 'variations'],
     },
   },
+  {
+    name: 'search_products',
+    description:
+      'Look up a super fund or wrap platform by name (or alias). Returns product ' +
+      'details and the estimated annual fee at the user\'s current super balance. ' +
+      'Use for compare_fund intent to retrieve fee data for both funds.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        fund_name: {
+          type: 'string',
+          description:
+            'Fund name, alias, or sentinel ("the market" / "industry average")',
+        },
+      },
+      required: ['fund_name'],
+    },
+  },
 ];
 
 // ── Structured Input Requests ────────────────────────────────────────────────
 
 const FIELD_INPUT_REQUESTS: Record<string, InputRequest> = {
+  super_fund_name: {
+    type: 'text',
+    field: 'super_fund_name',
+    required: true,
+    label: 'YOUR SUPER FUND',
+    hint: 'Start typing to search',
+    placeholder: 'e.g. AustralianSuper',
+    autocomplete: true,
+  },
   date_of_birth_year: {
     type: 'numeric',
     field: 'date_of_birth_year',
@@ -401,6 +433,7 @@ const EXTRACTABLE_PROFILE_FIELDS: Record<string, 'number' | 'string' | 'boolean'
   date_of_birth_year: 'number',
   income: 'number',
   super_balance: 'number',
+  super_fund_name: 'string',
   intended_retirement_age: 'number',
   expenses: 'number',
   relationship_status: 'string',
@@ -454,6 +487,34 @@ YOUR ROLE:
 INTENTS:
 ${buildIntentPromptBlock()}
 
+COMPARE_FUND INTENT:
+When intent is compare_fund:
+1. Call get_required_fields with intent "compare_fund" first (it requires super_fund_name and super_balance).
+2. If super_fund_name is missing, you MUST ask exactly: "Which super fund are you currently with?" and STOP. Do NOT call search_products or run any comparison until super_fund_name is known.
+3. Once super_fund_name is in the profile, call search_products TWICE — once for the user's fund, once for the comparison target (or "the market" if none specified).
+4. Never ask for super_fund_name more than once — once collected it is saved to the profile.
+5. When the user states their fund name (e.g. "I'm with Hostplus"), extract it into super_fund_name via extracted_profile_data on your next tool call.
+
+COMPARE_FUND RESPONSE FORMAT — MANDATORY:
+When presenting a fund comparison result, use this EXACT structure and nothing else:
+
+[User's fund] vs [Comparison fund] at $[balance]
+
+[User fund]       $[fee] p.a.
+[Comparison fund] $[fee] p.a.
+─────────────────────────────────
+Difference        $[gap] p.a.
+
+[One sentence: what this means for the user.]
+
+[One sentence disclaimer: general information only, not advice.]
+
+Rules for compare_fund responses:
+- Never more than 2 sentences of prose below the fee table
+- Do not explain fee structure components unless the user asks
+- Do not list caveats about performance, insurance, or other factors unless the user asks
+- The disclaimer must be one sentence maximum, at the bottom
+
 WORKFLOW:
 1. Classify the user's intent
 2. Extract ALL values the user has stated in this conversation. Separate them into two categories:
@@ -461,6 +522,7 @@ WORKFLOW:
       • Birth year / age / "born in X" → date_of_birth_year (number, e.g. 1985)
       • Salary / income / "I earn $X" → income (number, e.g. 80000)
       • Super balance / "I have $X in super" → super_balance (number, e.g. 320000)
+      • Super fund name / "I'm with X" → super_fund_name (string, e.g. "Hostplus")
       • Retirement age / "retire at X" → intended_retirement_age (number, e.g. 67)
       • Expenses / spending / "I spend $X" → expenses (number, e.g. 60000)
       • Relationship → relationship_status (string: single, partnered, married, separated)
@@ -806,11 +868,27 @@ function getCommonOverrideSatisfiedFields(
   return common;
 }
 
-function executeToolCall(
+async function handleSearchProducts(
+  input: { fund_name: string },
+  ctx: ToolContext,
+): Promise<Record<string, unknown>> {
+  const balance =
+    (ctx.profileData.super_balance as number | undefined) ?? 50_000;
+  const product = await findProduct(input.fund_name);
+
+  if (!product) {
+    return { found: false, product: null, fee_at_balance: 0 };
+  }
+
+  const fee = calculateAnnualFee(product.fee_structure as FeeStructure, balance);
+  return { found: true, product, fee_at_balance: fee };
+}
+
+async function executeToolCall(
   name: string,
   input: unknown,
   ctx: ToolContext,
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
   switch (name) {
     case 'get_required_fields':
       return handleGetRequiredFields(
@@ -825,6 +903,11 @@ function executeToolCall(
     case 'compare_scenarios':
       return handleCompareScenarios(
         input as Parameters<typeof handleCompareScenarios>[0],
+        ctx,
+      );
+    case 'search_products':
+      return await handleSearchProducts(
+        input as { fund_name: string },
         ctx,
       );
     default:
@@ -910,12 +993,12 @@ export async function runChat(
       (block): block is Anthropic.Messages.ToolUseBlock => block.type === 'tool_use',
     );
 
-    const toolResults: Anthropic.Messages.ToolResultBlockParam[] = toolUseBlocks.map(
-      (block) => ({
+    const toolResults: Anthropic.Messages.ToolResultBlockParam[] = await Promise.all(
+      toolUseBlocks.map(async (block) => ({
         type: 'tool_result' as const,
         tool_use_id: block.id,
-        content: JSON.stringify(executeToolCall(block.name, block.input, ctx)),
-      }),
+        content: JSON.stringify(await executeToolCall(block.name, block.input, ctx)),
+      })),
     );
 
     messages.push({ role: 'assistant', content: response.content });

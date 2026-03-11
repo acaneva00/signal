@@ -16,6 +16,7 @@ export function StructuredInput({ inputRequest, onSelect }: StructuredInputProps
   if (inputRequest.type === 'numeric') return <NumericCard inputRequest={inputRequest} onSelect={onSelect} />
   if (inputRequest.type === 'chips') return <ChipSelector inputRequest={inputRequest} onSelect={onSelect} />
   if (inputRequest.type === 'segmented') return <SegmentedControl inputRequest={inputRequest} onSelect={onSelect} />
+  if (inputRequest.type === 'text') return <TextInput inputRequest={inputRequest} onSelect={onSelect} />
   return null
 }
 
@@ -423,6 +424,234 @@ function SegmentedControl({ inputRequest, onSelect }: StructuredInputProps) {
           )
         })}
       </div>
+    </div>
+  )
+}
+
+/* ── Pattern 4: Text Input with optional autocomplete ────────────────────── */
+
+interface SearchResult {
+  id: string
+  name: string
+}
+
+function TextInput({ inputRequest, onSelect }: StructuredInputProps) {
+  const { field, label, hint, placeholder, autocomplete } = inputRequest
+  const [value, setValue] = useState('')
+  const [results, setResults] = useState<SearchResult[]>([])
+  const [showDropdown, setShowDropdown] = useState(false)
+  const [activeIdx, setActiveIdx] = useState(-1)
+  const [isExiting, setIsExiting] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const submittedRef = useRef(false)
+  const blurIgnoreRef = useRef(false)
+
+  useEffect(() => {
+    const t = setTimeout(() => inputRef.current?.focus(), 100)
+    return () => {
+      clearTimeout(t)
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+    }
+  }, [])
+
+  const doSubmit = useCallback((text: string) => {
+    if (submittedRef.current || !text.trim()) return
+    submittedRef.current = true
+    setShowDropdown(false)
+    setIsExiting(true)
+    setTimeout(() => {
+      onSelect(text.trim(), {
+        field,
+        value: text.trim(),
+        source: 'structured_input',
+        confidence: 1.0,
+      })
+    }, 150)
+  }, [field, onSelect])
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = e.target.value
+    setValue(v)
+    setActiveIdx(-1)
+
+    if (!autocomplete) return
+
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+
+    if (v.trim().length < 2) {
+      setResults([])
+      setShowDropdown(false)
+      return
+    }
+
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/products/search?q=${encodeURIComponent(v.trim())}`)
+        if (res.ok) {
+          const data: SearchResult[] = await res.json()
+          setResults(data)
+          setShowDropdown(data.length > 0)
+        }
+      } catch {
+        setResults([])
+        setShowDropdown(false)
+      }
+    }, 200)
+  }
+
+  const handleSelect = (name: string) => {
+    setValue(name)
+    setShowDropdown(false)
+    doSubmit(name)
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      setShowDropdown(false)
+      return
+    }
+
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      if (showDropdown && activeIdx >= 0 && activeIdx < results.length) {
+        handleSelect(results[activeIdx].name)
+      } else {
+        doSubmit(value)
+      }
+      return
+    }
+
+    if (showDropdown && results.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setActiveIdx((prev) => (prev < results.length - 1 ? prev + 1 : 0))
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setActiveIdx((prev) => (prev > 0 ? prev - 1 : results.length - 1))
+      }
+    }
+  }
+
+  const handleBlur = () => {
+    if (blurIgnoreRef.current) {
+      blurIgnoreRef.current = false
+      return
+    }
+    setTimeout(() => {
+      if (submittedRef.current) return
+      setShowDropdown(false)
+      if (value.trim()) doSubmit(value)
+    }, 200)
+  }
+
+  return (
+    <div
+      ref={containerRef}
+      style={{
+        opacity: isExiting ? 0 : 1,
+        transform: isExiting ? 'translateY(4px)' : 'translateY(0)',
+        transition: 'opacity 150ms ease, transform 150ms ease',
+        position: 'relative',
+      }}
+    >
+      <div className="animate-numeric-card-in" style={{
+        background: 'var(--color-bg-surface)',
+        border: '1px solid var(--color-border-strong)',
+        borderRadius: 16,
+        padding: 16,
+        maxWidth: 400,
+        boxShadow: 'var(--shadow-card)',
+      }}>
+        <div style={{
+          fontSize: 10,
+          fontWeight: 600,
+          textTransform: 'uppercase',
+          letterSpacing: '0.08em',
+          color: 'var(--color-text-muted)',
+          marginBottom: 8,
+        }}>
+          {label || field.replace(/_/g, ' ')}
+        </div>
+
+        <input
+          ref={inputRef}
+          type="text"
+          value={value}
+          onChange={handleChange}
+          onKeyDown={handleKeyDown}
+          onBlur={handleBlur}
+          placeholder={placeholder}
+          autoComplete="off"
+          style={{
+            width: '100%',
+            fontSize: 20,
+            fontWeight: 600,
+            fontFamily: 'Inter, system-ui, sans-serif',
+            color: 'var(--color-text-primary)',
+            background: 'transparent',
+            border: 'none',
+            outline: 'none',
+            padding: 0,
+          }}
+        />
+
+        {hint && (
+          <div style={{
+            fontSize: 11,
+            color: 'var(--color-text-muted)',
+            marginTop: 8,
+          }}>
+            {hint}
+          </div>
+        )}
+      </div>
+
+      {showDropdown && results.length > 0 && (
+        <div style={{
+          position: 'absolute',
+          top: '100%',
+          left: 0,
+          right: 0,
+          maxWidth: 400,
+          marginTop: 4,
+          background: '#0C0E14',
+          border: '1px solid var(--color-border-strong)',
+          borderRadius: 12,
+          overflow: 'hidden',
+          boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+          zIndex: 50,
+        }}>
+          {results.map((r, i) => (
+            <button
+              type="button"
+              key={r.id}
+              onMouseDown={() => {
+                blurIgnoreRef.current = true
+                handleSelect(r.name)
+              }}
+              onMouseEnter={() => setActiveIdx(i)}
+              style={{
+                display: 'block',
+                width: '100%',
+                textAlign: 'left',
+                padding: '10px 14px',
+                fontSize: 14,
+                fontWeight: 500,
+                fontFamily: 'Inter, system-ui, sans-serif',
+                color: i === activeIdx ? '#fff' : 'var(--color-text-primary)',
+                background: i === activeIdx ? '#4F7EF7' : 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                transition: 'background 80ms ease, color 80ms ease',
+              }}
+            >
+              {r.name}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
