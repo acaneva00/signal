@@ -46,7 +46,6 @@ import {
 import {
   calculateAgePension,
   calculateDeemedIncome,
-  calculateCentrelinkAssetValue as clAssetValue,
   type CentrelinkRates,
   type CentrelinkResult,
   FORTNIGHTS_PER_YEAR,
@@ -408,6 +407,8 @@ export function project(scenario: Scenario): ProjectionResult {
         super_voluntary_concessional: (sr?.voluntaryConcessional ?? 0) + (sr?.salarySacrifice ?? 0),
         super_voluntary_non_concessional: sr?.voluntaryNonConcessional ?? 0,
         super_balance: sr?.closingBalance ?? (superFunds.find(f => f.person_id === ps.person.id)?.balance ?? 0),
+        super_investment_return: sr ? (sr.grossEarnings - sr.earningsTax) : 0,
+        super_fees: sr ? (sr.adminFees + sr.insurancePremium) : 0,
         super_pension_drawdown: pensionDrawdown,
         taxable_income: 0,
         tax_payable: 0,
@@ -635,7 +636,7 @@ export function project(scenario: Scenario): ProjectionResult {
       );
 
       for (const action of actions) {
-        applyAllocationAction(action, assets, liabilities);
+        applyAllocationAction(action, assets, liabilities, superFunds);
       }
     } else if (netCashFlow < 0) {
       const anySuperAccessible = Array.from(personState.values()).some(ps =>
@@ -830,11 +831,12 @@ function nextMonth(year: number, month: number): { year: number; month: number }
   return { year, month: month + 1 };
 }
 
-/** Apply a surplus allocation action by mutating the assets/liabilities arrays. */
+/** Apply a surplus allocation action by mutating the assets/liabilities/superFunds arrays. */
 function applyAllocationAction(
   action: { action: string; target_id: string; amount: number },
   assets: Asset[],
   liabilities: Liability[],
+  superFunds: SuperFund[],
 ): void {
   switch (action.action) {
     case 'add_to_buffer':
@@ -852,6 +854,19 @@ function applyAllocationAction(
         liabilities[idx] = {
           ...liabilities[idx],
           current_balance: Math.max(0, liabilities[idx].current_balance - action.amount),
+        };
+      }
+      break;
+    }
+    case 'super_contribution': {
+      const idx = superFunds.findIndex(f =>
+        f.person_id === action.target_id || f.id === action.target_id,
+      );
+      const targetIdx = idx >= 0 ? idx : 0;
+      if (targetIdx < superFunds.length) {
+        superFunds[targetIdx] = {
+          ...superFunds[targetIdx],
+          balance: superFunds[targetIdx].balance + action.amount,
         };
       }
       break;

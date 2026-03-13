@@ -20,7 +20,7 @@ export interface QuizSessionData {
 }
 
 const PRIORITY_TO_INTENTS: Record<string, CalculationIntentName[]> = {
-  super_retirement: ['super_at_age', 'super_longevity'],
+  super_retirement: ['super_at_age', 'super_longevity', 'compare_super_projection', 'compare_super_longevity'],
   take_home_pay: ['take_home_pay'],
   mortgage_debt: ['extra_mortgage_payment'],
   net_worth: ['household_net_worth'],
@@ -65,6 +65,10 @@ const PRIORITY_SENTENCES: Record<string, string> = {
     "We can build out a full picture of your household's net worth trajectory.",
   aged_pension:
     "I can work out whether you're likely to qualify for the age pension and what that's worth.",
+  compare_super_projection:
+    'I can compare how your super would look at retirement if you switched to a different fund.',
+  compare_super_longevity:
+    'I can compare which fund would make your super last longer in retirement.',
 }
 
 const CONFIDENCE_LINES: Record<string, string> = {

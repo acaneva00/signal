@@ -20,7 +20,7 @@ import {
   type ComparisonResult,
 } from '@/engine/api';
 import type { ProjectionResult } from '@/engine/models';
-import type { InputRequest, FundFeeBreakdown, FeeBreakdownComparison } from '@/types/agent';
+import type { InputRequest, FundFeeBreakdown, FeeBreakdownComparison, FundFeeProjection, FeeProjectionRow } from '@/types/agent';
 import {
   type ProfileData,
   type ScenarioOverrides,
@@ -37,8 +37,15 @@ import {
   isCalculationIntent,
 } from '@/lib/intents';
 import { findProduct } from '@/lib/products/product-lookup';
-import { calculateAnnualFee, decomposeFeeComponents } from '@/lib/products/fee-calculator';
+import { calculateAnnualFee, decomposeFeeComponents, convertToEngineFees } from '@/lib/products/fee-calculator';
 import type { FeeStructure, InvestmentOption } from '@/lib/products/fee-calculator';
+import {
+  hasDefaultOption,
+  findClosestOption,
+  resolveOptionGrowthPct,
+} from '@/lib/products/investment-options';
+import { FIELD_INPUT_REQUESTS, EXTRACTABLE_PROFILE_FIELDS } from '@/lib/field-registry';
+import { getAnnualBudget } from '@/engine/rates/asfa';
 
 // ── Public Types ─────────────────────────────────────────────────────────────
 
@@ -132,6 +139,30 @@ const TOOLS: Anthropic.Tool[] = [
             mortgage_repayment: { type: 'number', description: 'Monthly mortgage repayment' },
             assets: { type: 'number', description: 'Total other assessable assets' },
             liabilities: { type: 'number', description: 'Total other liabilities' },
+            retirement_expense_strategy: {
+              type: 'string',
+              enum: ['current_spending', 'asfa_modest', 'asfa_comfortable', 'custom'],
+              description: 'How the user wants to estimate retirement expenses',
+            },
+            retirement_expenses: { type: 'number', description: 'Custom annual retirement spending nominated by the user' },
+            projection_scope: {
+              type: 'string',
+              enum: ['super_only', 'full_model'],
+              description: 'Whether to project super only or the full financial model',
+            },
+            surplus_allocation_strategy: {
+              type: 'string',
+              enum: ['balanced', 'aggressive_debt', 'super_boost', 'investment_focused'],
+              description: 'How surplus cash flow should be allocated in full_model projections',
+            },
+            partner_date_of_birth_year: { type: 'number', description: "Partner's year of birth" },
+            partner_income: { type: 'number', description: "Partner's annual gross salary" },
+            partner_super_balance: { type: 'number', description: "Partner's super balance" },
+            partner_super_fund_name: { type: 'string', description: "Partner's super fund name" },
+            partner_intended_retirement_age: { type: 'number', description: "Partner's target retirement age" },
+            partner_is_default_investment: { type: 'boolean', description: "Whether partner is in default investment option" },
+            partner_super_investment_option: { type: 'string', description: "Partner's investment option name" },
+            dependants_count: { type: 'string', description: 'Number of dependants (0, 1, 2, 3, 4+)' },
           },
         },
       },
@@ -199,6 +230,27 @@ const TOOLS: Anthropic.Tool[] = [
             mortgage_repayment: { type: 'number' },
             assets: { type: 'number' },
             liabilities: { type: 'number' },
+            retirement_expense_strategy: {
+              type: 'string',
+              enum: ['current_spending', 'asfa_modest', 'asfa_comfortable', 'custom'],
+            },
+            retirement_expenses: { type: 'number' },
+            projection_scope: {
+              type: 'string',
+              enum: ['super_only', 'full_model'],
+            },
+            surplus_allocation_strategy: {
+              type: 'string',
+              enum: ['balanced', 'aggressive_debt', 'super_boost', 'investment_focused'],
+            },
+            partner_date_of_birth_year: { type: 'number' },
+            partner_income: { type: 'number' },
+            partner_super_balance: { type: 'number' },
+            partner_super_fund_name: { type: 'string' },
+            partner_intended_retirement_age: { type: 'number' },
+            partner_is_default_investment: { type: 'boolean' },
+            partner_super_investment_option: { type: 'string' },
+            dependants_count: { type: 'string' },
           },
         },
       },
@@ -209,8 +261,10 @@ const TOOLS: Anthropic.Tool[] = [
     name: 'compare_scenarios',
     description:
       'Compare multiple projection scenarios side-by-side for "what if" ' +
-      'questions. Each variation uses the same base profile with different ' +
-      'overrides.',
+      'questions or fund comparisons. Each variation uses the same base ' +
+      'profile with different overrides. When comparing different super ' +
+      'funds, set fund_name on each variation — the system automatically ' +
+      'resolves fees and matches investment options by growth profile.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -224,6 +278,13 @@ const TOOLS: Anthropic.Tool[] = [
             type: 'object',
             properties: {
               name: { type: 'string', description: 'Label for this scenario' },
+              fund_name: {
+                type: 'string',
+                description:
+                  'Super fund name for this scenario. Defaults to the user\'s ' +
+                  'current fund. When set, fees are resolved automatically — ' +
+                  'do NOT pass super_fees_flat/super_fees_percent manually.',
+              },
               overrides: {
                 type: 'object',
                 description: 'Parameter overrides for this variation',
@@ -248,7 +309,7 @@ const TOOLS: Anthropic.Tool[] = [
     description:
       'Look up a super fund or wrap platform by name (or alias). Returns product ' +
       'details and the estimated annual fee at the user\'s current super balance. ' +
-      'Use for compare_fund intent to retrieve fee data for both funds.',
+      'Use for compare_fund intent (fee-only flow) or when retrieving product details.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -263,190 +324,9 @@ const TOOLS: Anthropic.Tool[] = [
   },
 ];
 
-// ── Structured Input Requests ────────────────────────────────────────────────
-
-const FIELD_INPUT_REQUESTS: Record<string, InputRequest> = {
-  super_fund_name: {
-    type: 'text',
-    field: 'super_fund_name',
-    required: true,
-    label: 'YOUR SUPER FUND',
-    hint: 'Start typing to search',
-    placeholder: 'e.g. AustralianSuper',
-    autocomplete: true,
-  },
-  date_of_birth_year: {
-    type: 'numeric',
-    field: 'date_of_birth_year',
-    required: true,
-    label: 'BIRTH YEAR',
-    placeholder: 'e.g. 1985',
-    format: 'year',
-    min: 1930,
-    max: 2010,
-  },
-  income: {
-    type: 'numeric',
-    field: 'annual_income',
-    required: true,
-    label: 'ANNUAL INCOME',
-    hint: 'Before tax, per year',
-    placeholder: 'e.g. 90,000',
-    format: 'currency',
-    min: 0,
-    max: 500_000,
-  },
-  super_balance: {
-    type: 'numeric',
-    field: 'super_balance',
-    required: true,
-    label: 'SUPER BALANCE',
-    hint: 'Approximate is fine',
-    placeholder: 'e.g. 120,000',
-    format: 'currency',
-    min: 0,
-    max: 3_000_000,
-  },
-  intended_retirement_age: {
-    type: 'numeric',
-    field: 'intended_retirement_age',
-    required: true,
-    label: 'RETIREMENT AGE',
-    hint: "When you'd like to stop working",
-    placeholder: 'e.g. 67',
-    format: 'age',
-    min: 50,
-    max: 75,
-  },
-  expenses: {
-    type: 'numeric',
-    field: 'expenses',
-    required: true,
-    label: 'ANNUAL EXPENSES',
-    hint: 'Annual household expenses',
-    placeholder: 'e.g. 60,000',
-    format: 'currency',
-    min: 0,
-    max: 300_000,
-  },
-  relationship_status: {
-    type: 'chips',
-    field: 'relationship_status',
-    required: true,
-    options: [
-      { label: 'Single', value: 'single' },
-      { label: 'Married / De facto', value: 'married' },
-      { label: 'Separated', value: 'separated' },
-    ],
-  },
-  is_homeowner: {
-    type: 'chips',
-    field: 'housing_status',
-    required: true,
-    options: [
-      { label: 'I own my home', value: 'own' },
-      { label: 'I rent', value: 'rent' },
-      { label: 'Living with family', value: 'living_with_family' },
-    ],
-  },
-  has_hecs_help_debt: {
-    type: 'chips',
-    field: 'has_hecs_help_debt',
-    required: true,
-    options: [
-      { label: 'Yes, I have HECS', value: 'true' },
-      { label: 'No HECS debt', value: 'false' },
-    ],
-  },
-  hecs_help_balance: {
-    type: 'numeric',
-    field: 'hecs_help_balance',
-    required: true,
-    label: 'HECS BALANCE',
-    hint: 'Outstanding balance',
-    placeholder: 'e.g. 25,000',
-    format: 'currency',
-    min: 0,
-    max: 200_000,
-  },
-  mortgage_balance: {
-    type: 'numeric',
-    field: 'mortgage_balance',
-    required: true,
-    label: 'MORTGAGE BALANCE',
-    hint: 'Approximate remaining balance',
-    placeholder: 'e.g. 400,000',
-    format: 'currency',
-    min: 0,
-    max: 3_000_000,
-  },
-  mortgage_rate: {
-    type: 'numeric',
-    field: 'mortgage_rate',
-    required: true,
-    label: 'MORTGAGE RATE',
-    hint: 'Annual interest rate, e.g. 6.2%',
-    placeholder: 'e.g. 6.2',
-    format: 'number',
-    min: 0,
-    max: 15,
-  },
-  mortgage_repayment: {
-    type: 'numeric',
-    field: 'mortgage_repayment',
-    required: true,
-    label: 'MONTHLY REPAYMENT',
-    hint: 'Monthly mortgage repayment',
-    placeholder: 'e.g. 2,500',
-    format: 'currency',
-    min: 0,
-    max: 10_000,
-  },
-  assets: {
-    type: 'numeric',
-    field: 'assets',
-    required: true,
-    label: 'OTHER ASSETS',
-    hint: 'Total other assessable assets',
-    placeholder: 'e.g. 50,000',
-    format: 'currency',
-    min: 0,
-    max: 5_000_000,
-  },
-  liabilities: {
-    type: 'numeric',
-    field: 'liabilities',
-    required: true,
-    label: 'OTHER LIABILITIES',
-    hint: 'Total other liabilities',
-    placeholder: 'e.g. 10,000',
-    format: 'currency',
-    min: 0,
-    max: 3_000_000,
-  },
-};
-
-// ── Extractable Profile Fields ───────────────────────────────────────────────
-// Fields that Claude can extract from free-text conversation and persist to
-// the user's profile. Maps canonical field name → expected JS typeof.
-
-const EXTRACTABLE_PROFILE_FIELDS: Record<string, 'number' | 'string' | 'boolean'> = {
-  date_of_birth_year: 'number',
-  income: 'number',
-  super_balance: 'number',
-  super_fund_name: 'string',
-  intended_retirement_age: 'number',
-  expenses: 'number',
-  relationship_status: 'string',
-  is_homeowner: 'boolean',
-  has_hecs_help_debt: 'boolean',
-  hecs_help_balance: 'number',
-  mortgage_balance: 'number',
-  mortgage_rate: 'number',
-  mortgage_repayment: 'number',
-  assets: 'number',
-  liabilities: 'number',
-};
+// ── Field Definitions ────────────────────────────────────────────────────────
+// All field definitions (widget specs + data types) live in field-registry.ts.
+// FIELD_INPUT_REQUESTS and EXTRACTABLE_PROFILE_FIELDS are imported above.
 
 /**
  * Validate and merge extracted profile data into the tool context.
@@ -499,11 +379,34 @@ When intent is compare_fund:
 7. Never ask for super_fund_name more than once — once collected it is saved to the profile.
 8. When the user states their fund name (e.g. "I'm with Hostplus"), extract it into super_fund_name via extracted_profile_data on your next get_required_fields call.
 
+INVESTMENT OPTION COLLECTION:
+When is_default_investment is missing (and the fund has a default option), ask: "Have you made any choices about how your super is invested, or are you in the default option?" and STOP.
+If the fund has NO default/MySuper option (e.g. wrap platforms), is_default_investment is skipped entirely.
+If the user is NOT in the default option (is_default_investment = false), the next missing field will be super_investment_option. Ask: "Which investment option are you in?" and STOP. The widget will show a searchable list of their fund's options.
+If the user IS in the default option (is_default_investment = true), super_investment_option is skipped — the projection uses the fund's default fee.
+
+FUND FEES IN PROJECTIONS:
+- When the user's fund is known, projections automatically use the fund's real fee structure instead of industry averages.
+- When presenting results, state the fund and investment option the fees are based on (e.g. "Using AustralianSuper Balanced fees.").
+- If the fund is unknown, disclose: "Using average industry fees ($78 admin + 0.70% p.a.). Tell us your fund for exact fees."
+- For projection comparisons across different funds, use compare_scenarios with fund_name on each variation. The system automatically resolves fees and matches investment options by growth profile. Do NOT pass super_fees_flat or super_fees_percent manually.
+
 INVESTMENT OPTION CONSISTENCY:
 - On the first comparison, state the investment option assumed for each fund (e.g. "Assumes Balanced for both funds.").
 - Store the assumed option as the comparison_investment_option for this conversation.
 - On subsequent comparisons in the same session, reuse the same investment option unless the user explicitly changes it.
 - If the user changes the option (e.g. "show me high growth"), explicitly state: "Switching to [option] — recalculating both funds on that basis." before presenting the updated comparison.
+
+INTENT ROUTING FOR FUND COMPARISONS:
+- compare_fund: Fee-only comparison, no projection. Use when user asks "How do my fees compare?" with no prior projection. Call search_products TWICE, then present fee table. Do NOT call compare_scenarios.
+- compare_super_projection: User wants to compare super balance at retirement across funds. Use when: (a) user has a projection and asks "what if I switched to [fund]?", or (b) user asks upfront "compare my super at retirement if I was with Aussie vs Vanguard". Call compare_scenarios with intent "compare_super_projection" and fund_name on each variation.
+- compare_super_longevity: User wants to compare how long super lasts across funds (super only). Use when: "Which fund would make my super last longer?" or similar. Call compare_scenarios with intent "compare_super_longevity" and fund_name on each variation. The system forces projection_scope to super_only.
+
+COMPARE_SUPER_PROJECTION INTENT:
+When intent is compare_super_projection: Call get_required_fields with intent "compare_super_projection" and pass ALL extracted_profile_data. Required fields match super_at_age. Once all present, call compare_scenarios with intent "compare_super_projection" and fund_name on each variation (e.g. user's fund vs target fund). Do NOT call search_products — compare_scenarios resolves fees automatically.
+
+COMPARE_SUPER_LONGIVITY INTENT:
+When intent is compare_super_longevity: Call get_required_fields with intent "compare_super_longevity" and pass ALL extracted_profile_data. Required fields include relationship_status and retirement_expense_strategy (for ASFA amounts). Once all present, call compare_scenarios with intent "compare_super_longevity" and fund_name on each variation. The system forces projection_scope to super_only — no non-super assets. Do NOT call search_products — compare_scenarios resolves fees automatically.
 
 COMPARE_FUND RESPONSE FORMAT — MANDATORY:
 When presenting a fund comparison result, use this EXACT structure and nothing else:
@@ -586,6 +489,10 @@ WORKFLOW:
       • Super fund name / "I'm with X" → super_fund_name (string, e.g. "Hostplus")
       • Retirement age / "retire at X" → intended_retirement_age (number, e.g. 67)
       • Expenses / spending / "I spend $X" → expenses (number, e.g. 60000)
+      • Retirement spending / "spend $X in retirement" → retirement_expenses (number, e.g. 80000)
+      • Retirement expense strategy → retirement_expense_strategy (string: current_spending, asfa_modest, asfa_comfortable, custom)
+      • Projection scope / "just super" / "full picture" → projection_scope (string: super_only, full_model)
+      • Surplus allocation / "pay off debt" / "boost super" → surplus_allocation_strategy (string: balanced, aggressive_debt, super_boost, investment_focused)
       • Relationship → relationship_status (string: single, partnered, married, separated)
       • Owns home → is_homeowner (boolean)
       • HECS/HELP → has_hecs_help_debt (boolean), hecs_help_balance (number)
@@ -598,7 +505,7 @@ WORKFLOW:
       • Extra super contributions → extra_super_contribution
       • Retirement age for what-if → retirement_age
       • Spending for what-if → annual_expenses
-3. For calculation intents: call get_required_fields, passing:
+3. For ALL calculation intents: call get_required_fields on EVERY turn before responding. Never ask for a field value without the corresponding tool call — the tool generates the input widget the frontend needs. Pass:
    - extracted_profile_data with ALL profile values from step 2a (saves them to the user's profile)
    - planned_overrides with scenario overrides from step 2b
 4. If fields are still missing: ask the user ONE question, in priority order
@@ -634,14 +541,47 @@ If the user has already answered a question via free text in an earlier message,
 PROJECTION SCOPE:
 - Standard projections (super_at_age, compare_retirement_age, fee_impact, household_net_worth, etc.) cover the ACCUMULATION PHASE ONLY — from now until retirement age.
 - They do NOT model retirement drawdown, pension income, or post-retirement expenses because retirement spending details have not been captured yet.
-- Only the super_longevity intent projects through the full retirement phase (it requires expenses data).
+- Only the super_longevity intent projects through the full retirement phase (it requires retirement expense data).
 - When presenting accumulation-only results, make this clear: "This projection shows your position at retirement. It doesn't model how you'll draw down savings in retirement."
-- If the user asks "How long will my super last?" or about retirement income sustainability, use the super_longevity intent — it will collect the necessary expense data.
+- If the user asks "How long will my super last?" or about retirement income sustainability, use the super_longevity intent — it will collect the necessary retirement expense data.
+
+PROJECTION SCOPE (super_longevity intent):
+- The first question after super fund name is projection_scope: "Would you like to project just your super, or include all your assets and income?"
+- "Super only" (super_only): projects super accumulation and retirement drawdown only. No pre-retirement expenses or non-super assets. This is the simpler, faster path.
+- "Full financial picture" (full_model): models full cash flow — income, expenses, assets, liabilities, surplus allocation, and deficit funding — from today through retirement.
+- If the user selects full_model, additional fields are collected: mortgage details (if homeowner), other assets, other liabilities, and surplus allocation strategy. Note: annual expenses are collected earlier in the flow as core financial data (before retirement age), so they will already be known.
+- When presenting full_model results, emphasize: total net worth trajectory (not just super), non-super asset pool at retirement, cash flow breakdown, when/how deficits are funded, and Age Pension eligibility.
+
+SURPLUS ALLOCATION (full_model only):
+- After collecting financial details, ask how surplus cash flow should be allocated. Options: Balanced (default), Aggressive debt paydown, Super boost, Investment focused.
+- Balanced: emergency buffer, then debt repayment, then cash.
+- Aggressive debt: prioritises maximum debt repayment.
+- Super boost: adds extra super contributions ($2,500/mo) after debt repayment.
+- Investment focused: directs surplus to investment portfolio ($2,000/mo) after debt repayment.
+
+RETIREMENT EXPENSES (super_longevity intent):
+- When the super_longevity intent needs expense data, use the retirement_expense_strategy selector instead of asking for a raw number. The selector offers four options: Same as today, ASFA Modest, ASFA Comfortable, or Custom amount.
+- relationship_status is collected before the strategy selector (needed for ASFA single/couple amounts). The chip labels are dynamically enriched with the correct dollar figures once relationship status is known.
+- The retirement_expense_strategy question determines ONLY the retirement spending figure. Pre-retirement annual expenses are collected earlier in the flow (as core financial data, before retirement age) and will already be known by this point in full_model mode.
+- If user selects "Same as today", the engine uses the already-collected annual expenses as the retirement spending base. When presenting results, note that today's spending is projected forward in nominal terms (e.g. "Your current $60K spending is projected forward with 2.5% inflation — in nominal terms that's higher at retirement"). In super_only mode, expenses will be collected as a follow-up if not already known.
+- If user selects "Custom amount" and retirement_expenses is not already known, ask for the specific annual retirement amount. Frame this clearly as retirement-specific spending, distinct from the pre-retirement expenses already collected.
+- ASFA options auto-resolve based on relationship_status (single vs couple) — no follow-up question needed.
+- If the user has already stated a specific retirement spending amount in conversation (e.g. "I want to spend $80K in retirement"), capture it as retirement_expenses and set retirement_expense_strategy to "custom". Skip the strategy selector in this case.
+- IMPORTANT (super_only scope): This projection does not model pre-retirement living expenses. Super accumulation is driven by SG contributions and investment returns, which are independent of pre-retirement spending. Mention this when relevant.
+- NOTE (full_model scope): Pre-retirement living expenses are collected early in the flow and drive surplus/deficit allocation to non-super assets. The retirement strategy question only determines the separate retirement expense figure. Both pre-retirement and retirement expense entries are created. The engine manages the transition automatically.
+
+COUPLE SCENARIOS (full_model + partnered/married):
+- When the user is partnered and selects full_model, collect partner details: birth year, income, super balance, super fund, retirement age, investment option.
+- Both persons' super funds are modelled separately, each with their own fees resolved via the same product lookup path (industry average fallback if fund not found).
+- Property and other assets default to 50/50 joint ownership.
+- Retirement expenses use ASFA couple rates when applicable.
+- Different retirement ages are supported — the engine handles two separate income cessation points.
+- When presenting results, show both persons' super trajectories and the combined household net worth.
 
 ECONOMIC ASSUMPTIONS (defaults — always disclose when used in a projection):
 - Investment return (balanced): 7.0% p.a. | (conservative): 5.0% | (growth): 8.5%
 - Inflation: 2.5% p.a. | Wage growth: 3.5% p.a.
-- Super fees (unknown fund): $78 admin + 0.70% p.a.
+- Super fees: when fund is known, the projection uses real fees from the fund's fee structure and the user's investment option. When fund is unknown: $78 admin + 0.70% p.a. (industry average).
 - SG rate, tax brackets, Centrelink thresholds: current legislated (regulatory facts)
 Users can override any economic assumption (e.g. "What if inflation is 4%?").
 
@@ -713,17 +653,40 @@ function projectionYearsForIntent(
 
 // ── Tool Handlers ────────────────────────────────────────────────────────────
 
-function handleGetRequiredFields(
+async function handleGetRequiredFields(
   input: {
     intent: string;
     planned_overrides?: ScenarioOverrides;
     extracted_profile_data?: Record<string, unknown>;
   },
   ctx: ToolContext,
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
   ctx.classifiedIntent = input.intent;
 
   const savedFields = mergeExtractedProfileData(input.extracted_profile_data, ctx);
+
+  // Detect whether the user's fund has a default (MySuper) option.
+  // Stored in profileData so applyConditionalLogic can skip is_default_investment.
+  const fundName = ctx.profileData.super_fund_name as string | undefined;
+  if (fundName && ctx.profileData._fund_has_default_option === undefined) {
+    const product = await findProduct(fundName);
+    if (product) {
+      const options = (product.investment_options as InvestmentOption[]) ?? [];
+      ctx.profileData._fund_has_default_option = hasDefaultOption(options);
+    } else {
+      ctx.profileData._fund_has_default_option = false;
+    }
+  }
+  const partnerFundName = ctx.profileData.partner_super_fund_name as string | undefined;
+  if (partnerFundName && ctx.profileData._partner_fund_has_default_option === undefined) {
+    const partnerProduct = await findProduct(partnerFundName);
+    if (partnerProduct) {
+      const partnerOptions = (partnerProduct.investment_options as InvestmentOption[]) ?? [];
+      ctx.profileData._partner_fund_has_default_option = hasDefaultOption(partnerOptions);
+    } else {
+      ctx.profileData._partner_fund_has_default_option = false;
+    }
+  }
 
   const requiredFields = getRequiredVariables(input.intent);
   if (requiredFields.length === 0) {
@@ -738,8 +701,45 @@ function handleGetRequiredFields(
   const satisfied = getFieldsSatisfiedByOverrides(input.planned_overrides);
   const effectiveMissing = missing.filter((f) => !satisfied.has(f));
 
-  const inputRequest =
+  let inputRequest =
     effectiveMissing.length > 0 ? (FIELD_INPUT_REQUESTS[effectiveMissing[0]] ?? null) : null;
+  if (inputRequest && inputRequest.field === 'super_investment_option') {
+    const fundName = ctx.profileData.super_fund_name as string | undefined;
+    if (fundName) {
+      inputRequest = {
+        ...inputRequest,
+        autocomplete_url: `/api/products/investment-options?fund=${encodeURIComponent(fundName)}`,
+      };
+    }
+  }
+  if (inputRequest && inputRequest.field === 'partner_super_investment_option') {
+    const partnerFundName = ctx.profileData.partner_super_fund_name as string | undefined;
+    if (partnerFundName) {
+      inputRequest = {
+        ...inputRequest,
+        autocomplete_url: `/api/products/investment-options?fund=${encodeURIComponent(partnerFundName)}`,
+      };
+    }
+  }
+  if (inputRequest && inputRequest.field === 'retirement_expense_strategy') {
+    const rs = resolveProfileField(ctx.profileData, 'relationship_status');
+    if (rs) {
+      const isCouple = ['partnered', 'married'].includes((rs as string) ?? '');
+      const modestAmt = getAnnualBudget('modest', isCouple);
+      const comfAmt = getAnnualBudget('comfortable', isCouple);
+      const fmtModest = `$${Math.round(modestAmt / 1000)}K`;
+      const fmtComf = `$${Math.round(comfAmt / 1000)}K`;
+      inputRequest = {
+        ...inputRequest,
+        options: [
+          { label: 'Same as today', value: 'current_spending' },
+          { label: `ASFA Modest (~${fmtModest}/yr)`, value: 'asfa_modest' },
+          { label: `ASFA Comfortable (~${fmtComf}/yr)`, value: 'asfa_comfortable' },
+          { label: 'Custom amount', value: 'custom' },
+        ],
+      };
+    }
+  }
   if (inputRequest) {
     ctx.lastInputRequest = inputRequest;
   }
@@ -754,7 +754,114 @@ function handleGetRequiredFields(
   };
 }
 
-function handleRunProjection(
+// ── Fund Fee Resolution ──────────────────────────────────────────────────────
+
+/**
+ * Look up the user's fund and resolve real fees based on their investment option.
+ * When overrides are provided, injects super_fees_flat/super_fees_percent directly.
+ * Returns the resolved fee params (or null if fund is unknown).
+ */
+async function resolveFundFees(
+  ctx: ToolContext,
+  overrides?: ScenarioOverrides,
+): Promise<{ flat: number; percent: number } | null> {
+  const fundName = ctx.profileData.super_fund_name as string | undefined;
+  if (!fundName) return null;
+
+  const product = await findProduct(fundName);
+  if (!product) return null;
+
+  const feeStructure: FeeStructure = {
+    ...(product.fee_structure as FeeStructure),
+    investment_options: (product.investment_options as InvestmentOption[]) ?? [],
+  };
+
+  const balance = (ctx.profileData.super_balance as number | undefined) ?? 50_000;
+  const birthYear = ctx.profileData.date_of_birth_year as number | undefined;
+
+  const isDefault = ctx.profileData.is_default_investment;
+  const investmentOption = isDefault === true || isDefault === 'true'
+    ? undefined
+    : (ctx.profileData.super_investment_option as string | undefined);
+
+  const fees = convertToEngineFees(feeStructure, balance, investmentOption, birthYear);
+
+  if (overrides) {
+    overrides.super_fees_flat = fees.flat;
+    overrides.super_fees_percent = fees.percent;
+  }
+
+  return fees;
+}
+
+/**
+ * Look up the partner's fund and resolve real fees. Falls back to industry
+ * average ($78 + 0.70%) if the fund is not found.
+ */
+async function resolvePartnerFundFees(
+  ctx: ToolContext,
+): Promise<{ flat: number; percent: number }> {
+  const fundName = ctx.profileData.partner_super_fund_name as string | undefined;
+  if (!fundName) return { flat: 78, percent: 0.007 };
+
+  const product = await findProduct(fundName);
+  if (!product) return { flat: 78, percent: 0.007 };
+
+  const feeStructure: FeeStructure = {
+    ...(product.fee_structure as FeeStructure),
+    investment_options: (product.investment_options as InvestmentOption[]) ?? [],
+  };
+
+  const balance = (ctx.profileData.partner_super_balance as number | undefined) ?? 50_000;
+  const birthYear = ctx.profileData.partner_date_of_birth_year as number | undefined;
+
+  const isDefault = ctx.profileData.partner_is_default_investment;
+  const investmentOption = isDefault === true || isDefault === 'true'
+    ? undefined
+    : (ctx.profileData.partner_super_investment_option as string | undefined);
+
+  return convertToEngineFees(feeStructure, balance, investmentOption, birthYear);
+}
+
+/**
+ * Resolve fees for any named fund, matching the investment option closest
+ * to the user's current growth profile. Always goes through
+ * `convertToEngineFees` so the unit convention is correct.
+ *
+ * Falls back to industry average ($78 + 0.70%) when the fund is not found.
+ */
+async function resolveFundFeesForName(
+  fundName: string,
+  userOptionGrowthPct: number,
+  balance: number,
+  birthYear: number | undefined,
+): Promise<{ flat: number; percent: number; matchedOptionName: string | undefined; product: Record<string, unknown> | null }> {
+  const INDUSTRY_FALLBACK = { flat: 78, percent: 0.007, matchedOptionName: undefined, product: null };
+
+  const product = await findProduct(fundName);
+  if (!product) return INDUSTRY_FALLBACK;
+
+  const options = (product.investment_options as InvestmentOption[]) ?? [];
+  const feeStructure: FeeStructure = {
+    ...(product.fee_structure as FeeStructure),
+    investment_options: options,
+  };
+
+  let investmentOptionName: string | undefined;
+  if (options.length > 0) {
+    const matched = findClosestOption(
+      options,
+      userOptionGrowthPct,
+      feeStructure.admin_fee_pct ?? 0,
+    );
+    investmentOptionName = matched?.name;
+  }
+
+  const fees = convertToEngineFees(feeStructure, balance, investmentOptionName, birthYear);
+  return { ...fees, matchedOptionName: investmentOptionName, product: product as unknown as Record<string, unknown> };
+}
+
+async function handleRunProjection(
   input: {
     intent: string;
     target_age?: number;
@@ -763,7 +870,7 @@ function handleRunProjection(
     extracted_profile_data?: Record<string, unknown>;
   },
   ctx: ToolContext,
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
   ctx.classifiedIntent = input.intent;
 
   mergeExtractedProfileData(input.extracted_profile_data, ctx);
@@ -785,6 +892,21 @@ function handleRunProjection(
       success: false,
       error: `Cannot run projection — missing fields: ${effectiveMissing.join(', ')}. Call get_required_fields first.`,
     };
+  }
+
+  if (overrides.super_fees_flat == null && overrides.super_fees_percent == null) {
+    await resolveFundFees(ctx, overrides);
+  }
+
+  // Resolve partner fund fees for couple scenarios
+  const scope = ctx.profileData.projection_scope as string | undefined;
+  const rs = ctx.profileData.relationship_status as string | undefined;
+  if (scope === 'full_model' && rs && ['partnered', 'married'].includes(rs)) {
+    const partnerFees = await resolvePartnerFundFees(ctx);
+    if (partnerFees) {
+      ctx.profileData._partner_fees_flat = partnerFees.flat;
+      ctx.profileData._partner_fees_percent = partnerFees.percent;
+    }
   }
 
   ctx.lastOverrides = overrides;
@@ -835,20 +957,21 @@ function handleRunProjection(
   }
 }
 
-function handleCompareScenarios(
+async function handleCompareScenarios(
   input: {
     intent: string;
-    variations: Array<{ name: string; overrides: ScenarioOverrides }>;
+    variations: Array<{ name: string; fund_name?: string; overrides: ScenarioOverrides }>;
     extracted_profile_data?: Record<string, unknown>;
   },
   ctx: ToolContext,
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
   ctx.classifiedIntent = input.intent;
 
   mergeExtractedProfileData(input.extracted_profile_data, ctx);
 
   const requiredFields = getRequiredVariables(input.intent);
-  const { available, missing } = checkFieldAvailability(ctx.profileData, requiredFields);
+  const { missing } = checkFieldAvailability(ctx.profileData, requiredFields);
+  const { available } = checkFieldAvailability(ctx.profileData, Object.keys(ctx.profileData));
 
   const commonSatisfied = getCommonOverrideSatisfiedFields(input.variations);
   const effectiveMissing = missing.filter((f) => !commonSatisfied.has(f));
@@ -861,8 +984,57 @@ function handleCompareScenarios(
   }
 
   try {
-    const scenarioInputs = input.variations.map((v) => {
+    const balance = (ctx.profileData.super_balance as number | undefined) ?? 50_000;
+    const birthYear = ctx.profileData.date_of_birth_year as number | undefined;
+
+    // Resolve the user's current growth profile for cross-fund matching
+    const userFundName = ctx.profileData.super_fund_name as string | undefined;
+    let userGrowthPct = 70; // balanced fallback
+    if (userFundName) {
+      const userProduct = await findProduct(userFundName);
+      if (userProduct) {
+        const userOptions = (userProduct.investment_options as InvestmentOption[]) ?? [];
+        const isDefault = ctx.profileData.is_default_investment === true
+          || ctx.profileData.is_default_investment === 'true';
+        const optionName = isDefault
+          ? undefined
+          : (ctx.profileData.super_investment_option as string | undefined);
+        userGrowthPct = resolveOptionGrowthPct(userOptions, optionName, isDefault);
+      }
+    }
+
+    // Resolve fees per-variation — each can specify its own fund_name
+    const scenarioInputs = await Promise.all(input.variations.map(async (v) => {
       const variationOverrides = { ...(v.overrides as ScenarioOverrides) };
+      const fundName = v.fund_name ?? userFundName;
+
+      if (input.intent === 'compare_super_longevity') {
+        variationOverrides.projection_scope = 'super_only';
+      }
+
+      if (variationOverrides.super_fees_flat == null && variationOverrides.super_fees_percent == null) {
+        if (fundName) {
+          const fees = await resolveFundFeesForName(fundName, userGrowthPct, balance, birthYear);
+          variationOverrides.super_fees_flat = fees.flat;
+          variationOverrides.super_fees_percent = fees.percent;
+
+          if (fees.product) {
+            const alreadyPresent = ctx.searchProductResults.some(
+              (r) => (r.product.name as string) === (fees.product!.name as string),
+            );
+            if (!alreadyPresent) {
+              ctx.searchProductResults.push({
+                product: fees.product,
+                fee_at_balance: calculateAnnualFee(
+                  { ...(fees.product.fee_structure as FeeStructure), investment_options: (fees.product.investment_options as InvestmentOption[]) ?? [] },
+                  balance, undefined, birthYear,
+                ),
+              });
+            }
+          }
+        }
+      }
+
       if (variationOverrides.projection_years == null) {
         const scopedYears = projectionYearsForIntent(
           input.intent, undefined, ctx.profileData, variationOverrides,
@@ -872,7 +1044,7 @@ function handleCompareScenarios(
         }
       }
       return buildScenarioFromProfile(available, variationOverrides, v.name);
-    });
+    }));
 
     const result = compareScenarios(scenarioInputs);
     ctx.lastComparisonResult = result;
@@ -939,9 +1111,10 @@ function buildFeeBreakdown(
   balanceUsed: number,
   birthYear?: number,
 ): FundFeeBreakdown {
+  const options = (product.investment_options as InvestmentOption[]) ?? [];
   const feeStructure: FeeStructure = {
     ...(product.fee_structure as FeeStructure),
-    investment_options: (product.investment_options as InvestmentOption[]) ?? [],
+    investment_options: options,
   };
 
   const { components, resolvedOptionName } = decomposeFeeComponents(
@@ -949,22 +1122,15 @@ function buildFeeBreakdown(
   );
   const totalAnnualFee = components.reduce((sum, c) => sum + c.annual_dollar, 0);
 
-  const investmentOptions = (product.investment_options ?? []) as Array<Record<string, unknown>>;
-
-  // Find the option that was actually resolved (by name match) so the card
-  // label, fee rate, and allocation percentages all come from the same entry.
-  let matchedOption: Record<string, unknown> | undefined;
+  let matchedOption: InvestmentOption | undefined;
   if (resolvedOptionName) {
-    matchedOption = investmentOptions.find(
-      (o) => (o.name as string) === resolvedOptionName,
-    );
+    matchedOption = options.find((o) => o.name === resolvedOptionName);
   }
-  const displayOption = matchedOption ?? investmentOptions[0] as Record<string, unknown> | undefined;
+  const displayOption = matchedOption ?? options[0];
 
-  const optionName = resolvedOptionName
-    ?? (displayOption?.option_name ?? displayOption?.name ?? 'Balanced') as string;
-  const growthPct = (displayOption?.growth_pct ?? 70) as number;
-  const defensivePct = (displayOption?.defensive_pct ?? (100 - growthPct)) as number;
+  const optionName = resolvedOptionName ?? displayOption?.name ?? 'Balanced';
+  const growthPct = displayOption?.growth_pct ?? 70;
+  const defensivePct = 100 - growthPct;
 
   return {
     fund_name: (product.fund_name ?? product.name ?? 'Unknown Fund') as string,
@@ -974,6 +1140,69 @@ function buildFeeBreakdown(
     total_annual_fee: Math.round(totalAnnualFee * 100) / 100,
     fee_components: components,
   };
+}
+
+function buildYearlyFeeProjections(
+  searchProductResults: Array<{ product: Record<string, unknown>; fee_at_balance: number }>,
+  comparisonResult: ComparisonResult,
+  birthYear?: number,
+): FundFeeProjection[] {
+  const projections: FundFeeProjection[] = [];
+
+  for (const { product } of searchProductResults) {
+    const fundName = ((product.fund_name ?? product.name ?? 'Unknown Fund') as string);
+    const fundNameLower = fundName.toLowerCase();
+
+    const matchedScenario = comparisonResult.scenarios.find((s) => {
+      const scenarioLower = s.scenario_name.toLowerCase();
+      return scenarioLower.includes(fundNameLower) || fundNameLower.includes(scenarioLower);
+    });
+
+    if (!matchedScenario || matchedScenario.trajectory.length === 0) continue;
+
+    const options = (product.investment_options as InvestmentOption[]) ?? [];
+    const feeStructure: FeeStructure = {
+      ...(product.fee_structure as FeeStructure),
+      investment_options: options,
+    };
+
+    const rows: FeeProjectionRow[] = [];
+    let cumulative = 0;
+
+    for (const point of matchedScenario.trajectory) {
+      const bal = point.super_balance;
+      const { components } = decomposeFeeComponents(feeStructure, bal, undefined, birthYear);
+
+      let adminDollar = 0;
+      let investmentDollar = 0;
+      let yearlyTotal = 0;
+
+      for (const c of components) {
+        yearlyTotal += c.annual_dollar;
+        if (c.label === 'Investment Fee') {
+          investmentDollar += c.annual_dollar;
+        } else {
+          adminDollar += c.annual_dollar;
+        }
+      }
+
+      cumulative += yearlyTotal;
+
+      rows.push({
+        year: point.year,
+        balance: bal,
+        admin_fee_dollar: Math.round(adminDollar * 100) / 100,
+        admin_fee_effective_pct: bal > 0 ? Math.round((adminDollar / bal) * 10000) / 100 : 0,
+        investment_fee_dollar: Math.round(investmentDollar * 100) / 100,
+        yearly_total: Math.round(yearlyTotal * 100) / 100,
+        cumulative: Math.round(cumulative * 100) / 100,
+      });
+    }
+
+    projections.push({ fund_name: fundName, rows });
+  }
+
+  return projections;
 }
 
 async function handleSearchProducts(
@@ -1017,17 +1246,17 @@ async function executeToolCall(
 ): Promise<Record<string, unknown>> {
   switch (name) {
     case 'get_required_fields':
-      return handleGetRequiredFields(
+      return await handleGetRequiredFields(
         input as Parameters<typeof handleGetRequiredFields>[0],
         ctx,
       );
     case 'run_projection':
-      return handleRunProjection(
+      return await handleRunProjection(
         input as Parameters<typeof handleRunProjection>[0],
         ctx,
       );
     case 'compare_scenarios':
-      return handleCompareScenarios(
+      return await handleCompareScenarios(
         input as Parameters<typeof handleCompareScenarios>[0],
         ctx,
       );
@@ -1059,7 +1288,14 @@ function buildAssumptionsList(ctx: ToolContext): string[] {
     `Wage growth assumed at ${(wageGrowth * 100).toFixed(1)}% per year`,
   ];
 
-  if (!ctx.profileData.super_fund_name) {
+  const fundName = ctx.profileData.super_fund_name as string | undefined;
+  if (fundName) {
+    const option = ctx.profileData.super_investment_option as string | undefined;
+    const isDefault = ctx.profileData.is_default_investment === true
+      || ctx.profileData.is_default_investment === 'true';
+    const optionLabel = isDefault ? 'default option' : (option ?? 'default option');
+    list.push(`Using ${fundName} fees (${optionLabel}).`);
+  } else {
     list.push(
       'Using average industry fees ($78 admin + 0.70% p.a.). Tell us your fund for exact fees.',
     );
@@ -1156,10 +1392,7 @@ export async function runChat(
   const hasComparison = ctx.lastComparisonResult !== null;
 
   let feeBreakdownComparison: FeeBreakdownComparison | null = null;
-  if (
-    ctx.classifiedIntent === 'compare_fund' &&
-    ctx.searchProductResults.length >= 2
-  ) {
+  if (ctx.searchProductResults.length >= 2) {
     const balance =
       (ctx.profileData.super_balance as number | undefined) ?? 50_000;
     const birthYear =
@@ -1182,6 +1415,11 @@ export async function runChat(
           );
         }
       }
+    }
+
+    if (ctx.lastComparisonResult && ctx.lastComparisonResult.scenarios.length > 0) {
+      feeBreakdownComparison.yearly_fee_projections =
+        buildYearlyFeeProjections(ctx.searchProductResults, ctx.lastComparisonResult, birthYear);
     }
   }
 

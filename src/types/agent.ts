@@ -28,10 +28,26 @@ export interface FundFeeBreakdown {
   fee_components: FeeComponent[]
 }
 
+export interface FeeProjectionRow {
+  year: number
+  balance: number
+  admin_fee_dollar: number
+  admin_fee_effective_pct: number
+  investment_fee_dollar: number
+  yearly_total: number
+  cumulative: number
+}
+
+export interface FundFeeProjection {
+  fund_name: string
+  rows: FeeProjectionRow[]
+}
+
 export interface FeeBreakdownComparison {
   funds: FundFeeBreakdown[]
   balance_used: number
   projection_diff?: number
+  yearly_fee_projections?: FundFeeProjection[]
 }
 
 export type CanvasPanel =
@@ -62,6 +78,7 @@ export interface InputRequest {
   min?: number
   max?: number
   autocomplete?: boolean
+  autocomplete_url?: string
 }
 
 export interface AgentOutput {

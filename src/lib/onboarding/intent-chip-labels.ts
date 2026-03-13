@@ -9,4 +9,7 @@ export const INTENT_CHIP_LABELS: Record<CalculationIntentName, string> = {
   fee_impact:              '🔍 How much are my super fees costing me?',
   extra_mortgage_payment:  '🏠 What\'s the impact of extra mortgage repayments?',
   household_net_worth:     '📈 What\'s our household net worth projection?',
+  compare_fund:            '⚖️ How do my super fund fees compare?',
+  compare_super_projection: '📊 How would my super compare at retirement if I switched funds?',
+  compare_super_longevity:   '⏱️ Which fund would make my super last longer?',
 }

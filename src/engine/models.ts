@@ -349,6 +349,8 @@ export const PersonMonthDetailSchema = z.object({
   super_voluntary_concessional: z.number().default(0.0),
   super_voluntary_non_concessional: z.number().default(0.0),
   super_balance: z.number().default(0.0),
+  super_investment_return: z.number().default(0.0),
+  super_fees: z.number().default(0.0),
   super_pension_drawdown: z.number().default(0.0),
   taxable_income: z.number().default(0.0),
   tax_payable: z.number().default(0.0),

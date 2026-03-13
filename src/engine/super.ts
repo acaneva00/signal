@@ -14,14 +14,15 @@
  */
 
 import type { SuperFund, SuperPhase } from './models';
-import { getMinimumDrawdownRate } from './rates/super-fy2025';
+import {
+  getMinimumDrawdownRate,
+  CONTRIBUTIONS_TAX_RATE,
+  EARNINGS_TAX_RATE_ACCUMULATION,
+  EARNINGS_TAX_RATE_PENSION,
+  MAX_TTR_DRAWDOWN_RATE,
+} from './rates/super-fy2025';
 
-// ── Constants ────────────────────────────────────────────────────────────────
-
-export const CONTRIBUTIONS_TAX_RATE = 0.15;
-export const EARNINGS_TAX_RATE_ACCUMULATION = 0.15;
-export const EARNINGS_TAX_RATE_PENSION = 0.0;
-export const MAX_TTR_DRAWDOWN_RATE = 0.10;
+export { CONTRIBUTIONS_TAX_RATE, EARNINGS_TAX_RATE_ACCUMULATION, EARNINGS_TAX_RATE_PENSION, MAX_TTR_DRAWDOWN_RATE };
 
 export const CATCH_UP_BALANCE_THRESHOLD = 500_000;
 export const CATCH_UP_LOOKBACK_YEARS = 5;

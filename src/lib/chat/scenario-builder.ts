@@ -7,6 +7,8 @@
  * (skip mortgage questions for renters).
  */
 
+import { getAnnualBudget } from '@/engine/rates/asfa';
+
 export type ProfileData = Record<string, unknown>;
 
 export interface ScenarioOverrides {
@@ -81,21 +83,35 @@ const SUPER_BAND_ESTIMATES: Record<string, number> = {
 
 const FIELD_PRIORITY: Record<string, number> = {
   super_fund_name: 0,
-  date_of_birth_year: 1,
-  income: 2,
-  super_balance: 3,
-  intended_retirement_age: 4,
+  projection_scope: 1,
+  date_of_birth_year: 2,
+  income: 3,
+  super_balance: 4,
   expenses: 5,
-  is_homeowner: 6,
-  relationship_status: 7,
-  has_hecs_help_debt: 8,
-  hecs_help_balance: 9,
-  mortgage_balance: 10,
-  mortgage_rate: 11,
-  mortgage_repayment: 12,
-  assets: 13,
-  liabilities: 14,
-  super_fees: 15,
+  intended_retirement_age: 6,
+  is_default_investment: 7,
+  super_investment_option: 8,
+  relationship_status: 9,
+  retirement_expense_strategy: 10,
+  retirement_expenses: 11,
+  is_homeowner: 12,
+  has_hecs_help_debt: 13,
+  hecs_help_balance: 14,
+  mortgage_balance: 15,
+  mortgage_rate: 16,
+  mortgage_repayment: 17,
+  assets: 18,
+  liabilities: 19,
+  surplus_allocation_strategy: 20,
+  partner_date_of_birth_year: 21,
+  partner_income: 22,
+  partner_super_balance: 23,
+  partner_super_fund_name: 24,
+  partner_intended_retirement_age: 25,
+  partner_is_default_investment: 26,
+  partner_super_investment_option: 27,
+  dependants_count: 28,
+  super_fees: 29,
 };
 
 export function sortFieldsByPriority(fields: string[]): string[] {
@@ -164,6 +180,44 @@ export function resolveProfileField(profile: ProfileData, field: string): unknow
       return profile.retirement_age ?? undefined;
     case 'super_fees':
       return profile.super_fund_fees ?? undefined;
+    case 'is_default_investment': {
+      const v = profile.is_default_investment;
+      if (typeof v === 'boolean') return v;
+      if (v === 'true') return true;
+      if (v === 'false') return false;
+      return undefined;
+    }
+    case 'super_investment_option':
+      return profile.super_investment_option ?? undefined;
+    case 'retirement_expense_strategy':
+      return profile.retirement_expense_strategy ?? undefined;
+    case 'retirement_expenses':
+      return profile.retirement_expenses ?? undefined;
+    case 'projection_scope':
+      return profile.projection_scope ?? undefined;
+    case 'surplus_allocation_strategy':
+      return profile.surplus_allocation_strategy ?? undefined;
+    case 'partner_date_of_birth_year':
+      return profile.partner_date_of_birth_year ?? undefined;
+    case 'partner_income':
+      return profile.partner_income ?? undefined;
+    case 'partner_super_balance':
+      return profile.partner_super_balance ?? undefined;
+    case 'partner_super_fund_name':
+      return profile.partner_super_fund_name ?? undefined;
+    case 'partner_intended_retirement_age':
+      return profile.partner_intended_retirement_age ?? undefined;
+    case 'partner_is_default_investment': {
+      const pv = profile.partner_is_default_investment;
+      if (typeof pv === 'boolean') return pv;
+      if (pv === 'true') return true;
+      if (pv === 'false') return false;
+      return undefined;
+    }
+    case 'partner_super_investment_option':
+      return profile.partner_super_investment_option ?? undefined;
+    case 'dependants_count':
+      return profile.dependants_count ?? undefined;
     default:
       return undefined;
   }
@@ -200,7 +254,39 @@ export function checkFieldAvailability(
  * Remove fields that are irrelevant given what we already know about the user.
  */
 function applyConditionalLogic(fields: string[], profile: ProfileData): string[] {
+  const hasProjectionScope = fields.includes('projection_scope');
+  const scope = hasProjectionScope
+    ? resolveProfileField(profile, 'projection_scope') as string | undefined
+    : undefined;
+
+  const FULL_MODEL_ONLY_FIELDS = new Set([
+    'mortgage_balance', 'mortgage_rate', 'mortgage_repayment',
+    'assets', 'liabilities', 'surplus_allocation_strategy',
+  ]);
+
+  const PARTNER_FIELDS = new Set([
+    'partner_date_of_birth_year', 'partner_income', 'partner_super_balance',
+    'partner_super_fund_name', 'partner_intended_retirement_age',
+    'partner_is_default_investment', 'partner_super_investment_option',
+    'dependants_count',
+  ]);
+
   return fields.filter((field) => {
+    // Skip default-investment question when the fund has no default/MySuper option
+    if (field === 'is_default_investment') {
+      if (profile._fund_has_default_option === false) return false;
+    }
+    if (field === 'partner_is_default_investment') {
+      if (profile._partner_fund_has_default_option === false) return false;
+    }
+
+    if (field === 'super_investment_option') {
+      // Also skip when fund has no default (implies no chooseable options)
+      if (profile._fund_has_default_option === false) return false;
+      const isDefault = resolveProfileField(profile, 'is_default_investment');
+      if (isDefault === true) return false;
+    }
+
     if (field === 'hecs_help_balance') {
       const hasHecs = resolveProfileField(profile, 'has_hecs_help_debt');
       if (hasHecs === false) return false;
@@ -211,8 +297,76 @@ function applyConditionalLogic(fields: string[], profile: ProfileData): string[]
       if (isHomeowner === false) return false;
     }
 
+    // Full-model-only fields: hide until projection_scope = full_model
+    if (hasProjectionScope && FULL_MODEL_ONLY_FIELDS.has(field)) {
+      if (!scope || scope !== 'full_model') return false;
+    }
+
+    // Partner fields: only when full_model AND partnered/married
+    if (PARTNER_FIELDS.has(field)) {
+      if (!scope || scope !== 'full_model') return false;
+      const rs = resolveProfileField(profile, 'relationship_status') as string | undefined;
+      if (!rs || !['partnered', 'married'].includes(rs)) return false;
+    }
+
+    // Partner investment option: skip if fund has no default, or partner is in default
+    if (field === 'partner_super_investment_option') {
+      if (profile._partner_fund_has_default_option === false) return false;
+      const partnerDefault = resolveProfileField(profile, 'partner_is_default_investment');
+      if (partnerDefault === true) return false;
+    }
+
+    // Expense field conditional logic depends on projection scope
+    if ((field === 'expenses' || field === 'retirement_expenses') && fields.includes('retirement_expense_strategy')) {
+      const strategy = resolveProfileField(profile, 'retirement_expense_strategy');
+
+      if (field === 'expenses') {
+        // In full_model, expenses are always required (drives pre-retirement cash flow)
+        if (scope === 'full_model') return true;
+        // In super_only (or no scope), only needed for current_spending strategy
+        if (!strategy) return false;
+        if (strategy !== 'current_spending') return false;
+      }
+
+      if (field === 'retirement_expenses') {
+        if (!strategy) return false;
+        if (strategy !== 'custom') return false;
+      }
+    }
+
     return true;
   });
+}
+
+// ── Retirement Expense Resolution ────────────────────────────────────────────
+
+/**
+ * Resolve the annual retirement expense amount based on the user's chosen strategy.
+ * ASFA options use single/couple values from the ASFA Retirement Standard.
+ * Returns null if the strategy or required data is not yet available.
+ */
+export function resolveRetirementExpenses(
+  resolvedData: Record<string, unknown>,
+): number | null {
+  const strategy = resolvedData.retirement_expense_strategy as string | undefined;
+  if (!strategy) return null;
+
+  const isCouple = ['partnered', 'married'].includes(
+    (resolvedData.relationship_status as string) ?? 'single',
+  );
+
+  switch (strategy) {
+    case 'asfa_modest':
+      return getAnnualBudget('modest', isCouple);
+    case 'asfa_comfortable':
+      return getAnnualBudget('comfortable', isCouple);
+    case 'current_spending':
+      return (resolvedData.expenses as number) ?? null;
+    case 'custom':
+      return (resolvedData.retirement_expenses as number) ?? null;
+    default:
+      return null;
+  }
 }
 
 // ── Employment / Relationship Mapping ────────────────────────────────────────
@@ -244,18 +398,41 @@ function parseDependants(val: unknown): number {
   return 0;
 }
 
-// ── Scenario Builder ─────────────────────────────────────────────────────────
+// ── Surplus Allocation Presets ────────────────────────────────────────────────
 
-/**
- * Build a Scenario-shaped plain object from resolved profile fields and
- * optional overrides. The result is passed to `runProjection()` which
- * validates it via Zod and fills remaining defaults.
- */
-export function buildScenarioFromProfile(
+export type SurplusStrategyName = 'balanced' | 'aggressive_debt' | 'super_boost' | 'investment_focused';
+
+const SURPLUS_PRESETS: Record<SurplusStrategyName, Record<string, unknown>[]> = {
+  balanced: [
+    { type: 'emergency_buffer' },
+    { type: 'extra_debt_repayment', strategy: 'avalanche' },
+    { type: 'remainder_to_cash' },
+  ],
+  aggressive_debt: [
+    { type: 'emergency_buffer' },
+    { type: 'extra_debt_repayment', strategy: 'avalanche' },
+    { type: 'remainder_to_cash' },
+  ],
+  super_boost: [
+    { type: 'emergency_buffer' },
+    { type: 'extra_debt_repayment', strategy: 'avalanche' },
+    { type: 'super_contribution', monthly_amount: 2500 },
+    { type: 'remainder_to_cash' },
+  ],
+  investment_focused: [
+    { type: 'emergency_buffer' },
+    { type: 'extra_debt_repayment', strategy: 'avalanche' },
+    { type: 'investment_contribution', monthly_amount: 2000 },
+    { type: 'remainder_to_cash' },
+  ],
+};
+
+// ── Shared Scenario Helpers ──────────────────────────────────────────────────
+
+function buildPersonData(
   resolvedData: Record<string, unknown>,
   overrides?: ScenarioOverrides,
-  scenarioName?: string,
-): Record<string, unknown> {
+) {
   const currentYear = new Date().getFullYear();
   const dobYear = resolvedData.date_of_birth_year as number | undefined;
   const retirementAge =
@@ -263,11 +440,9 @@ export function buildScenarioFromProfile(
     (resolvedData.intended_retirement_age as number | undefined) ??
     67;
   const currentAge = dobYear ? currentYear - dobYear : 40;
-  const projectionYears = overrides?.projection_years ?? Math.max(90 - currentAge, 10);
   const isHomeowner = resolvedData.is_homeowner === true;
   const hasHecs = resolvedData.has_hecs_help_debt === true;
 
-  // ── Person ──
   const person: Record<string, unknown> = {
     id: 'person_1',
     name: '',
@@ -281,19 +456,17 @@ export function buildScenarioFromProfile(
     is_homeowner: isHomeowner,
   };
 
-  // ── Household ──
-  const household: Record<string, unknown> = {
-    members: [person],
-    relationship_status: mapRelationship(resolvedData.relationship_status),
-    num_dependents: parseDependants(resolvedData.dependants_count),
-    dependents_ages: [],
-  };
+  return { person, currentYear, dobYear, retirementAge, currentAge, isHomeowner, hasHecs };
+}
 
-  // ── Income ──
-  const incomeStreams: Record<string, unknown>[] = [];
+function buildIncomeStreams(
+  resolvedData: Record<string, unknown>,
+  overrides?: ScenarioOverrides,
+): Record<string, unknown>[] {
+  const streams: Record<string, unknown>[] = [];
   const income = resolvedData.income as number | undefined;
   if (income && income > 0) {
-    incomeStreams.push({
+    streams.push({
       person_id: 'person_1',
       income_type: 'employment',
       gross_annual: income,
@@ -301,12 +474,17 @@ export function buildScenarioFromProfile(
       growth_rate: overrides?.wage_growth_rate ?? 0.035,
     });
   }
+  return streams;
+}
 
-  // ── Super ──
-  const superFunds: Record<string, unknown>[] = [];
+function buildSuperFunds(
+  resolvedData: Record<string, unknown>,
+  overrides?: ScenarioOverrides,
+): Record<string, unknown>[] {
+  const funds: Record<string, unknown>[] = [];
   const superBalance = resolvedData.super_balance as number | undefined;
   if (superBalance !== undefined) {
-    superFunds.push({
+    funds.push({
       person_id: 'person_1',
       balance: superBalance,
       phase: 'accumulation',
@@ -322,21 +500,16 @@ export function buildScenarioFromProfile(
       pension_drawdown_rate: null,
     });
   }
+  return funds;
+}
 
-  // ── Expenses ──
-  const expenses: Record<string, unknown>[] = [];
-  const expenseAmount = (resolvedData.expenses as number | undefined) ?? overrides?.annual_expenses;
-  if (expenseAmount && expenseAmount > 0) {
-    expenses.push({
-      name: 'Living expenses',
-      category: 'essential',
-      annual_amount: expenseAmount,
-      inflation_adjusted: true,
-    });
-  }
-
-  // ── Liabilities ──
+function buildLiabilities(
+  resolvedData: Record<string, unknown>,
+  overrides?: ScenarioOverrides,
+): Record<string, unknown>[] {
   const liabilities: Record<string, unknown>[] = [];
+  const hasHecs = resolvedData.has_hecs_help_debt === true;
+
   const mortgageBalance = resolvedData.mortgage_balance as number | undefined;
   if (mortgageBalance && mortgageBalance > 0) {
     const baseRepayment = resolvedData.mortgage_repayment as number | undefined;
@@ -365,8 +538,15 @@ export function buildScenarioFromProfile(
     });
   }
 
-  // ── Assets ──
+  return liabilities;
+}
+
+function buildNonSuperAssets(
+  resolvedData: Record<string, unknown>,
+): Record<string, unknown>[] {
   const assets: Record<string, unknown>[] = [];
+  const isHomeowner = resolvedData.is_homeowner === true;
+
   if (isHomeowner && resolvedData.property_value) {
     assets.push({
       id: 'home_1',
@@ -378,6 +558,7 @@ export function buildScenarioFromProfile(
       is_deemed: false,
     });
   }
+
   const totalAssets = resolvedData.assets as number | undefined;
   if (totalAssets && totalAssets > 0) {
     assets.push({
@@ -392,7 +573,96 @@ export function buildScenarioFromProfile(
     });
   }
 
-  // ── Assumptions (PRD: use economic.ts defaults, not engine defaults) ──
+  return assets;
+}
+
+// ── Scenario Builder ─────────────────────────────────────────────────────────
+
+/**
+ * Build a Scenario-shaped plain object from resolved profile fields and
+ * optional overrides. Dispatches to scope-specific builders based on
+ * projection_scope. The result is passed to `runProjection()` which
+ * validates it via Zod and fills remaining defaults.
+ */
+export function buildScenarioFromProfile(
+  resolvedData: Record<string, unknown>,
+  overrides?: ScenarioOverrides,
+  scenarioName?: string,
+): Record<string, unknown> {
+  const scope = resolvedData.projection_scope as string | undefined;
+  const relationship = resolvedData.relationship_status as string | undefined;
+  const isPartnered = ['partnered', 'married'].includes(relationship ?? '');
+
+  if (scope === 'full_model' && isPartnered) {
+    return buildCoupleScenario(resolvedData, overrides, scenarioName);
+  }
+  if (scope === 'full_model') {
+    return buildFullSingleScenario(resolvedData, overrides, scenarioName);
+  }
+  return buildSuperOnlyScenario(resolvedData, overrides, scenarioName);
+}
+
+/**
+ * Super-only scenario: 1 person, 1 super fund, retirement expenses only.
+ * No pre-retirement expenses, no non-super assets.
+ */
+function buildSuperOnlyScenario(
+  resolvedData: Record<string, unknown>,
+  overrides?: ScenarioOverrides,
+  scenarioName?: string,
+): Record<string, unknown> {
+  const { person, currentYear, dobYear, retirementAge, currentAge, isHomeowner } =
+    buildPersonData(resolvedData, overrides);
+  const projectionYears = overrides?.projection_years ?? Math.max(90 - currentAge, 10);
+
+  const household: Record<string, unknown> = {
+    members: [person],
+    relationship_status: mapRelationship(resolvedData.relationship_status),
+    num_dependents: parseDependants(resolvedData.dependants_count),
+    dependents_ages: [],
+  };
+
+  const expenses: Record<string, unknown>[] = [];
+  const retirementStrategy = resolvedData.retirement_expense_strategy as string | undefined;
+  if (retirementStrategy) {
+    const retExpenseAmount = resolveRetirementExpenses(resolvedData);
+    if (retExpenseAmount && retExpenseAmount > 0) {
+      const retirementYear = dobYear
+        ? dobYear + retirementAge
+        : currentYear + (retirementAge - currentAge);
+      expenses.push({
+        name: 'Retirement expenses',
+        category: 'essential',
+        annual_amount: retExpenseAmount,
+        inflation_adjusted: true,
+        start_year: retirementYear,
+      });
+    }
+  } else {
+    const expenseAmount = (resolvedData.expenses as number | undefined) ?? overrides?.annual_expenses;
+    if (expenseAmount && expenseAmount > 0) {
+      expenses.push({
+        name: 'Living expenses',
+        category: 'essential',
+        annual_amount: expenseAmount,
+        inflation_adjusted: true,
+      });
+    }
+  }
+
+  const assets: Record<string, unknown>[] = [];
+  if (isHomeowner && resolvedData.property_value) {
+    assets.push({
+      id: 'home_1',
+      name: 'Primary residence',
+      asset_class: 'property_home',
+      current_value: resolvedData.property_value as number,
+      is_primary_residence: true,
+      is_centrelink_assessable: false,
+      is_deemed: false,
+    });
+  }
+
   const assumptions: Record<string, unknown> = {
     inflation_rate: overrides?.inflation_rate ?? 0.025,
     wage_growth_rate: overrides?.wage_growth_rate ?? 0.035,
@@ -403,12 +673,248 @@ export function buildScenarioFromProfile(
     start_year: currentYear,
     projection_years: projectionYears,
     household,
+    income_streams: buildIncomeStreams(resolvedData, overrides),
+    expenses,
+    assets,
+    super_funds: buildSuperFunds(resolvedData, overrides),
+    liabilities: buildLiabilities(resolvedData, overrides),
+    scheduled_cash_flows: [],
+    assumptions,
+  };
+}
+
+/**
+ * Full model, single person: full assets, income, expenses, liabilities.
+ * Two expense entries: pre-retirement living expenses + retirement expenses.
+ * Configurable surplus allocation via strategy presets.
+ */
+function buildFullSingleScenario(
+  resolvedData: Record<string, unknown>,
+  overrides?: ScenarioOverrides,
+  scenarioName?: string,
+): Record<string, unknown> {
+  const { person, currentYear, dobYear, retirementAge, currentAge } =
+    buildPersonData(resolvedData, overrides);
+  const projectionYears = overrides?.projection_years ?? Math.max(90 - currentAge, 10);
+
+  const household: Record<string, unknown> = {
+    members: [person],
+    relationship_status: mapRelationship(resolvedData.relationship_status),
+    num_dependents: parseDependants(resolvedData.dependants_count),
+    dependents_ages: [],
+  };
+
+  const expenses: Record<string, unknown>[] = [];
+
+  // Entry 1: Pre-retirement living expenses (no start_year — applies from today)
+  const livingExpenses = (resolvedData.expenses as number | undefined) ?? overrides?.annual_expenses;
+  if (livingExpenses && livingExpenses > 0) {
+    expenses.push({
+      name: 'Living expenses',
+      category: 'essential',
+      annual_amount: livingExpenses,
+      inflation_adjusted: true,
+    });
+  }
+
+  // Entry 2: Retirement expenses (with start_year — applies from retirement)
+  const retExpenseAmount = resolveRetirementExpenses(resolvedData);
+  if (retExpenseAmount && retExpenseAmount > 0) {
+    const retirementYear = dobYear
+      ? dobYear + retirementAge
+      : currentYear + (retirementAge - currentAge);
+    expenses.push({
+      name: 'Retirement expenses',
+      category: 'essential',
+      annual_amount: retExpenseAmount,
+      inflation_adjusted: true,
+      start_year: retirementYear,
+    });
+  }
+
+  const strategyName = (resolvedData.surplus_allocation_strategy as SurplusStrategyName | undefined) ?? 'balanced';
+  const surplusRules = SURPLUS_PRESETS[strategyName] ?? SURPLUS_PRESETS.balanced;
+
+  const assumptions: Record<string, unknown> = {
+    inflation_rate: overrides?.inflation_rate ?? 0.025,
+    wage_growth_rate: overrides?.wage_growth_rate ?? 0.035,
+  };
+
+  return {
+    name: scenarioName ?? 'Full model projection',
+    start_year: currentYear,
+    projection_years: projectionYears,
+    household,
+    income_streams: buildIncomeStreams(resolvedData, overrides),
+    expenses,
+    assets: buildNonSuperAssets(resolvedData),
+    super_funds: buildSuperFunds(resolvedData, overrides),
+    liabilities: buildLiabilities(resolvedData, overrides),
+    scheduled_cash_flows: [],
+    assumptions,
+    allocation_rules: {
+      surplus_priority: surplusRules,
+    },
+  };
+}
+
+/**
+ * Full model, coupled: 2 persons, 2 super funds, 2 income streams,
+ * joint/individual assets, combined expenses.
+ */
+function buildCoupleScenario(
+  resolvedData: Record<string, unknown>,
+  overrides?: ScenarioOverrides,
+  scenarioName?: string,
+): Record<string, unknown> {
+  const currentYear = new Date().getFullYear();
+  const p1 = buildPersonData(resolvedData, overrides);
+  const projectionYears = overrides?.projection_years ?? Math.max(90 - p1.currentAge, 10);
+
+  // Partner person
+  const partnerDobYear = resolvedData.partner_date_of_birth_year as number | undefined;
+  const partnerRetAge = (resolvedData.partner_intended_retirement_age as number | undefined) ?? 67;
+  const partnerHasHecs = false;
+  const person2: Record<string, unknown> = {
+    id: 'person_2',
+    name: 'Partner',
+    date_of_birth_year: partnerDobYear ?? currentYear - 40,
+    gender: 'other',
+    is_australian_resident: true,
+    employment_status: 'employed',
+    intended_retirement_age: partnerRetAge,
+    has_hecs_help_debt: partnerHasHecs,
+    hecs_help_balance: 0,
+    is_homeowner: p1.isHomeowner,
+  };
+
+  const household: Record<string, unknown> = {
+    members: [p1.person, person2],
+    relationship_status: 'partnered',
+    num_dependents: parseDependants(resolvedData.dependants_count),
+    dependents_ages: [],
+  };
+
+  // Income streams for both persons
+  const incomeStreams = buildIncomeStreams(resolvedData, overrides);
+  const partnerIncome = resolvedData.partner_income as number | undefined;
+  if (partnerIncome && partnerIncome > 0) {
+    incomeStreams.push({
+      person_id: 'person_2',
+      income_type: 'employment',
+      gross_annual: partnerIncome,
+      includes_super: false,
+      growth_rate: overrides?.wage_growth_rate ?? 0.035,
+    });
+  }
+
+  // Super funds for both persons
+  const superFunds = buildSuperFunds(resolvedData, overrides);
+  const partnerSuperBalance = resolvedData.partner_super_balance as number | undefined;
+  if (partnerSuperBalance !== undefined) {
+    superFunds.push({
+      person_id: 'person_2',
+      balance: partnerSuperBalance,
+      phase: 'accumulation',
+      investment_return: overrides?.investment_return ?? 0.07,
+      retirement_investment_return: overrides?.retirement_investment_return ?? 0.05,
+      admin_fee_flat: (resolvedData._partner_fees_flat as number | undefined) ?? 78,
+      admin_fee_percent: (resolvedData._partner_fees_percent as number | undefined) ?? 0.007,
+      insurance_premium: 0,
+      employer_sg_included: true,
+      voluntary_concessional: 0,
+      voluntary_non_concessional: 0,
+      spouse_contribution: 0,
+      pension_drawdown_rate: null,
+    });
+  }
+
+  // Two expense entries: pre-retirement + retirement (household-level)
+  const expenses: Record<string, unknown>[] = [];
+  const livingExpenses = (resolvedData.expenses as number | undefined) ?? overrides?.annual_expenses;
+  if (livingExpenses && livingExpenses > 0) {
+    expenses.push({
+      name: 'Living expenses',
+      category: 'essential',
+      annual_amount: livingExpenses,
+      inflation_adjusted: true,
+    });
+  }
+
+  const retExpenseAmount = resolveRetirementExpenses(resolvedData);
+  if (retExpenseAmount && retExpenseAmount > 0) {
+    // Use the earlier retirement date of the two persons
+    const p1RetYear = p1.dobYear
+      ? p1.dobYear + p1.retirementAge
+      : currentYear + (p1.retirementAge - p1.currentAge);
+    const p2RetYear = partnerDobYear
+      ? partnerDobYear + partnerRetAge
+      : currentYear + (partnerRetAge - (partnerDobYear ? currentYear - partnerDobYear : 40));
+    const retirementYear = Math.min(p1RetYear, p2RetYear);
+
+    expenses.push({
+      name: 'Retirement expenses',
+      category: 'essential',
+      annual_amount: retExpenseAmount,
+      inflation_adjusted: true,
+      start_year: retirementYear,
+    });
+  }
+
+  // Assets: joint ownership for property, individual for other assets
+  const assets: Record<string, unknown>[] = [];
+  if (p1.isHomeowner && resolvedData.property_value) {
+    assets.push({
+      id: 'home_1',
+      name: 'Primary residence',
+      asset_class: 'property_home',
+      current_value: resolvedData.property_value as number,
+      is_primary_residence: true,
+      is_centrelink_assessable: false,
+      is_deemed: false,
+      ownership_type: 'joint',
+      ownership_split: { person_1: 0.5, person_2: 0.5 },
+    });
+  }
+
+  const totalAssets = resolvedData.assets as number | undefined;
+  if (totalAssets && totalAssets > 0) {
+    assets.push({
+      id: 'other_assets_1',
+      name: 'Other assessable assets',
+      asset_class: 'mixed_balanced',
+      current_value: totalAssets,
+      growth_rate: 0.05,
+      income_yield: 0.03,
+      is_centrelink_assessable: true,
+      is_deemed: true,
+      ownership_type: 'joint',
+      ownership_split: { person_1: 0.5, person_2: 0.5 },
+    });
+  }
+
+  const strategyName = (resolvedData.surplus_allocation_strategy as SurplusStrategyName | undefined) ?? 'balanced';
+  const surplusRules = SURPLUS_PRESETS[strategyName] ?? SURPLUS_PRESETS.balanced;
+
+  const assumptions: Record<string, unknown> = {
+    inflation_rate: overrides?.inflation_rate ?? 0.025,
+    wage_growth_rate: overrides?.wage_growth_rate ?? 0.035,
+  };
+
+  return {
+    name: scenarioName ?? 'Couple projection',
+    start_year: currentYear,
+    projection_years: projectionYears,
+    household,
     income_streams: incomeStreams,
     expenses,
     assets,
     super_funds: superFunds,
-    liabilities,
+    liabilities: buildLiabilities(resolvedData, overrides),
     scheduled_cash_flows: [],
     assumptions,
+    allocation_rules: {
+      surplus_priority: surplusRules,
+    },
   };
 }

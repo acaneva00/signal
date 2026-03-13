@@ -7,6 +7,7 @@ import { ProjectionSummaryCard } from './ProjectionSummaryCard'
 import { ScenarioComparisonChart } from './ScenarioComparisonChart'
 import { FeeImpactBarChart } from './FeeImpactBarChart'
 import { FeeBreakdownChart } from './FeeBreakdownChart'
+import { FeeProjectionTable } from './FeeProjectionTable'
 import { TaxBreakdownWaterfall } from './TaxBreakdownWaterfall'
 import { CashFlowWaterfall } from './CashFlowWaterfall'
 import { BalanceSheetCards } from './BalanceSheetCards'
@@ -44,7 +45,7 @@ export function Canvas({
   const showTaxWaterfall = hasProjection && canvasFlags.showTaxWaterfall
   const showCashFlow = hasProjection && canvasFlags.showCashFlow
   const showBalanceSheet = hasProjection && canvasFlags.showBalanceSheet
-  const showForecastTable = hasProjection && projectionSummary!.yearly_detail.length > 3
+  const showForecastTable = hasProjection && projectionSummary!.yearly_detail.length > 0
 
   return (
     <div className="flex flex-col h-full">
@@ -67,6 +68,10 @@ export function Canvas({
               <FeeBreakdownChart data={feeBreakdownComparison!} />
             )}
 
+            {hasFeeBreakdown && !!feeBreakdownComparison!.yearly_fee_projections?.length && (
+              <FeeProjectionTable projections={feeBreakdownComparison!.yearly_fee_projections} />
+            )}
+
             {hasProjection && !hasComparison && (
               <>
                 <div>
@@ -81,6 +86,7 @@ export function Canvas({
                 <ProjectionSummaryCard
                   summary={projectionSummary!}
                   assumptions={assumptions}
+                  intent={intent}
                 />
               </>
             )}
@@ -98,7 +104,7 @@ export function Canvas({
             )}
 
             {showForecastTable && (
-              <ForecastTable summary={projectionSummary!} />
+              <ForecastTable summary={projectionSummary!} intent={intent} />
             )}
 
             {disclaimers.length > 0 && (

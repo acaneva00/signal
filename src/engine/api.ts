@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { ScenarioSchema, type ProjectionResult } from './models';
 import { project } from './engine';
 import { getRequiredFields } from '@/lib/intents';
+import { CONTRIBUTIONS_TAX_RATE } from './rates/super-fy2025';
 
 // ── Result Types ─────────────────────────────────────────────────────────────
 
@@ -42,6 +43,13 @@ export interface YearlyDetail {
   total_assets: number;
   total_liabilities: number;
   net_worth: number;
+  opening_super_balance: number;
+  sg_contributions: number;
+  voluntary_contributions: number;
+  investment_return: number;
+  fees: number;
+  pension_drawdown: number;
+  lump_sum_withdrawals: number | null;
 }
 
 export interface ProjectionSummary {
@@ -365,9 +373,11 @@ function buildTrajectory(result: ProjectionResult): TrajectoryPoint[] {
 function buildYearlyDetail(result: ProjectionResult): YearlyDetail[] {
   const details: YearlyDetail[] = [];
   const snaps = result.snapshots;
+  const netContributionRate = 1 - CONTRIBUTIONS_TAX_RATE;
 
   for (let fyStart = 0; fyStart < snaps.length; fyStart += 12) {
     const fyEnd = Math.min(fyStart + 12, snaps.length);
+    const firstMonth = snaps[fyStart];
     const lastMonth = snaps[fyEnd - 1];
     const person = lastMonth.persons[0];
 
@@ -382,6 +392,11 @@ function buildYearlyDetail(result: ProjectionResult): YearlyDetail[] {
     let expenses = 0;
     let loanRepayments = 0;
     let netCashFlow = 0;
+    let sgContributions = 0;
+    let voluntaryContributions = 0;
+    let investmentReturn = 0;
+    let fees = 0;
+    let pensionDrawdown = 0;
 
     for (let i = fyStart; i < fyEnd; i++) {
       const s = snaps[i];
@@ -398,8 +413,19 @@ function buildYearlyDetail(result: ProjectionResult): YearlyDetail[] {
       for (const p of s.persons) {
         medicare += p.medicare_levy;
         hecs += p.hecs_repayment;
+        sgContributions += p.super_sg_contributions * netContributionRate;
+        voluntaryContributions +=
+          p.super_voluntary_concessional * netContributionRate +
+          p.super_voluntary_non_concessional;
+        investmentReturn += p.super_investment_return;
+        fees += p.super_fees;
+        pensionDrawdown += p.super_pension_drawdown;
       }
     }
+
+    const openingSuper = fyStart > 0
+      ? snaps[fyStart - 1].total_super
+      : firstMonth.total_super;
 
     details.push({
       financial_year: lastMonth.year,
@@ -420,6 +446,13 @@ function buildYearlyDetail(result: ProjectionResult): YearlyDetail[] {
       total_assets: lastMonth.total_assets,
       total_liabilities: lastMonth.total_liabilities,
       net_worth: lastMonth.net_worth,
+      opening_super_balance: openingSuper,
+      sg_contributions: sgContributions,
+      voluntary_contributions: voluntaryContributions,
+      investment_return: investmentReturn,
+      fees,
+      pension_drawdown: pensionDrawdown,
+      lump_sum_withdrawals: null,
     });
   }
 

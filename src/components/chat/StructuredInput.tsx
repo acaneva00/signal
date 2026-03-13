@@ -436,7 +436,7 @@ interface SearchResult {
 }
 
 function TextInput({ inputRequest, onSelect }: StructuredInputProps) {
-  const { field, label, hint, placeholder, autocomplete } = inputRequest
+  const { field, label, hint, placeholder, autocomplete, autocomplete_url } = inputRequest
   const [value, setValue] = useState('')
   const [results, setResults] = useState<SearchResult[]>([])
   const [showDropdown, setShowDropdown] = useState(false)
@@ -488,7 +488,9 @@ function TextInput({ inputRequest, onSelect }: StructuredInputProps) {
 
     debounceRef.current = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/products/search?q=${encodeURIComponent(v.trim())}`)
+        const baseUrl = autocomplete_url ?? '/api/products/search'
+        const separator = baseUrl.includes('?') ? '&' : '?'
+        const res = await fetch(`${baseUrl}${separator}q=${encodeURIComponent(v.trim())}`)
         if (res.ok) {
           const data: SearchResult[] = await res.json()
           setResults(data)

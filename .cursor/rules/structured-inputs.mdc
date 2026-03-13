@@ -114,5 +114,6 @@ When mentioning that a structured input should be used, describe it like this:
 
 - When a precise value has already been collected (e.g., annual_income = $112,500), use the exact value instead of falling back to the band selector
 - Structured inputs automatically update the user's financial_profiles.profile_data
-- All structured inputs are defined in `src/types/agent.ts`
+- All field definitions (data type + widget spec) live in `src/lib/field-registry.ts` — this is the single source of truth
+- The `InputRequest` TypeScript interface is defined in `src/types/agent.ts`
 - Full documentation is in `docs/API_STRUCTURED_INPUTS.md`

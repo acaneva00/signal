@@ -57,6 +57,12 @@ export const PRESERVATION_AGES: PreservationAge[] = [
   { birthYearStart: 1964, birthYearEnd: null, age: 60 },
 ];
 
+// Super tax rates
+export const CONTRIBUTIONS_TAX_RATE = 0.15;
+export const EARNINGS_TAX_RATE_ACCUMULATION = 0.15;
+export const EARNINGS_TAX_RATE_PENSION = 0.0;
+export const MAX_TTR_DRAWDOWN_RATE = 0.10;
+
 // Minimum pension drawdown rates by age
 export const MINIMUM_DRAWDOWN_RATES: MinimumDrawdownRate[] = [
   { ageStart: 0, ageEnd: 64, rate: 0.04 },    // 4%

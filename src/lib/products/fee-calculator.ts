@@ -1,14 +1,10 @@
+export type { InvestmentOption } from './investment-options';
+import type { InvestmentOption } from './investment-options';
+
 export interface AdminFeeTier {
   balance_from: number;
   balance_to: number | null;
   rate_pct: number;
-}
-
-export interface InvestmentOption {
-  name: string;
-  investment_fee_pct?: number;
-  total_fee_pct?: number;
-  description?: string;
 }
 
 export interface FeeStructure {
@@ -377,4 +373,46 @@ const INDUSTRY_AVG_TOTAL_PCT = 0.85;
  */
 export function industryAverageFee(balance: number): number {
   return INDUSTRY_AVG_ADMIN_PA + (INDUSTRY_AVG_TOTAL_PCT / 100) * balance;
+}
+
+export interface EngineFeeParams {
+  flat: number;
+  percent: number;
+}
+
+/**
+ * Convert a full FeeStructure into the engine's simplified two-param format
+ * (admin_fee_flat in dollars p.a., admin_fee_percent as a decimal e.g. 0.007).
+ *
+ * Delegates to decomposeFeeComponents so the resolution cascade is reused:
+ *   1. Explicit investmentOption → resolveInvestmentOption
+ *   2. No option + birthYear + Lifestage fund → autoResolveLifestageOption
+ *   3. Otherwise → investment_fee_default_pct
+ *
+ * When is_default_investment is true, pass undefined for investmentOption.
+ */
+export function convertToEngineFees(
+  feeStructure: FeeStructure,
+  balance: number,
+  investmentOption?: string,
+  birthYear?: number,
+): EngineFeeParams {
+  const { components } = decomposeFeeComponents(
+    feeStructure, balance, investmentOption, birthYear,
+  );
+
+  let flat = 0;
+  let percentDollars = 0;
+
+  for (const c of components) {
+    if (c.type === 'flat') {
+      flat += c.annual_dollar;
+    } else {
+      percentDollars += c.annual_dollar;
+    }
+  }
+
+  const percent = balance > 0 ? percentDollars / balance : 0;
+
+  return { flat, percent };
 }

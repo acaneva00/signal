@@ -181,11 +181,30 @@ export function allocateSurplus(
 
         if (investAmount <= 0) break;
 
-        actions.push({
-          action: 'investment_contribution',
-          target_id: rule.target_asset_id ?? 'investment',
-          amount: investAmount,
-        });
+        if (rule.target_asset_id) {
+          actions.push({
+            action: 'investment_contribution',
+            target_id: rule.target_asset_id,
+            amount: investAmount,
+          });
+        } else {
+          let investAsset = assets.find((a) =>
+            a.asset_class === 'mixed_balanced' ||
+            a.asset_class === 'australian_shares' ||
+            a.asset_class === 'international_shares',
+          );
+
+          if (!investAsset) {
+            investAsset = createDefaultInvestmentAsset();
+            assets.push(investAsset);
+          }
+
+          actions.push({
+            action: 'investment_contribution',
+            target_id: investAsset.id,
+            amount: investAmount,
+          });
+        }
         remaining -= investAmount;
         break;
       }
@@ -193,13 +212,18 @@ export function allocateSurplus(
       case 'remainder_to_cash': {
         if (remaining <= 0) break;
 
-        const cashAsset = rule.target_asset_id
+        let cashAsset = rule.target_asset_id
           ? assets.find((a) => a.id === rule.target_asset_id)
           : assets.find((a) => a.asset_class === 'cash');
 
+        if (!cashAsset) {
+          cashAsset = createDefaultCashAsset();
+          assets.push(cashAsset);
+        }
+
         actions.push({
           action: 'remainder_to_cash',
-          target_id: cashAsset?.id ?? 'cash',
+          target_id: cashAsset.id,
           amount: remaining,
         });
         remaining = 0;
@@ -216,7 +240,7 @@ export function allocateSurplus(
 const ASSET_CLASS_MAP: Record<string, string[]> = {
   cash: ['cash'],
   fixed_interest: ['fixed_interest'],
-  shares: ['australian_shares', 'international_shares'],
+  shares: ['australian_shares', 'international_shares', 'mixed_balanced'],
   property: ['property_investment'],
 };
 
@@ -324,6 +348,52 @@ export function processDeficit(
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+function createDefaultCashAsset(): Asset {
+  return {
+    id: 'cash_default',
+    name: 'Cash savings',
+    asset_class: 'cash',
+    current_value: 0,
+    cost_base: 0,
+    ownership_type: 'individual',
+    owner_id: null,
+    ownership_split: {},
+    growth_rate: 0,
+    income_yield: 0.04,
+    franking_rate: 0,
+    expense_ratio: 0,
+    is_centrelink_assessable: true,
+    is_deemed: true,
+    is_primary_residence: false,
+    funded_by_liability_id: null,
+    is_lifestyle_asset: false,
+    depreciation_rate: 0,
+  };
+}
+
+function createDefaultInvestmentAsset(): Asset {
+  return {
+    id: 'investment_default',
+    name: 'Investment portfolio',
+    asset_class: 'mixed_balanced',
+    current_value: 0,
+    cost_base: 0,
+    ownership_type: 'individual',
+    owner_id: null,
+    ownership_split: {},
+    growth_rate: 0.03,
+    income_yield: 0.03,
+    franking_rate: 0.30,
+    expense_ratio: 0,
+    is_centrelink_assessable: true,
+    is_deemed: true,
+    is_primary_residence: false,
+    funded_by_liability_id: null,
+    is_lifestyle_asset: false,
+    depreciation_rate: 0,
+  };
+}
 
 function findCandidateAssets(rule: DrawdownRule, assets: Asset[]): Asset[] {
   if (rule.asset_id) {
