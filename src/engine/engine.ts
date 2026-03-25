@@ -25,6 +25,7 @@ import type {
   Assumptions,
   AllocationRules,
 } from './models';
+import { getBirthYearFromDate, getBirthMonthFromDate } from './models';
 
 import {
   calculateIndividualTax,
@@ -77,10 +78,12 @@ import {
   processDeficit,
   DEFAULT_SURPLUS_RULES,
   DEFAULT_DRAWDOWN_RULES,
+  SUPER_ONLY_DRAWDOWN_RULES,
   type SuperFundSummary,
 } from './allocation';
 
 import { getRatesForFY, type FYRates } from './rates/resolver';
+import { getMinimumDrawdownRate } from './rates/super-fy2025';
 
 // ── Per-Person Mutable State ─────────────────────────────────────────────────
 
@@ -146,7 +149,7 @@ export function project(scenario: Scenario): ProjectionResult {
     personState.set(m.id, {
       person: m,
       isRetired: m.employment_status === 'retired',
-      age: startYear - m.date_of_birth_year,
+      age: calculateAge(m.date_of_birth, startYear, startMonth),
       fyContributions: { financialYear: fy, concessionalUsed: 0, nonConcessionalUsed: 0 },
       catchUpState: { unusedCapByFY: {} },
       bringForwardState: { triggeredInFY: null, totalUsedInWindow: 0 },
@@ -177,10 +180,47 @@ export function project(scenario: Scenario): ProjectionResult {
 
   const snapshots: MonthSnapshot[] = [];
 
+  // FY accumulators for annual surplus/deficit (reset each July)
+  let fyTotalNeeded = 0;
+  let fyTotalUnavoidable = 0;
+  let fyScheduledNet = 0;
+  let fyExpenses = 0;
+  let fyTax = 0;
+  let fyPension = 0;
+  let fyAssetIncome = 0;
+
+  // FY metadata for trajectory (gross shortfall, secondary-by-source)
+  let fyGrossShortfall = 0;
+  let fyMonthlyAdditionalDrawTarget: number | null = null;
+  let fyAnnualExpenses = 0; // set in Pass 1, used for June cap
+  let fyActualMinABPDrawn = 0;
+  let fyActualAdditionalABPDrawn = 0;
+  let fyActualCentrelink = 0;
+  let fyActualAssetIncome = 0;
+  let fyActualTax = 0;
+  let fySecondaryCash = 0;
+  let fySecondaryFixedInterest = 0;
+  let fySecondarySuper = 0;
+  let fySecondaryShares = 0;
+  let fySecondaryProperty = 0;
+  let fyLumpSum = 0;
+  const fyMetadataByYear: Array<{
+    fy: number;
+    fyGrossShortfall: number;
+    fySecondaryCash: number;
+    fySecondaryFixedInterest: number;
+    fySecondarySuper: number;
+    fySecondaryShares: number;
+    fySecondaryProperty: number;
+    fyLumpSum: number;
+  }> = [];
+
   // ── Monthly Loop ───────────────────────────────────────────────────────────
 
   let year = startYear;
   let month = startMonth;
+
+  const LUMP_SUM_TRANSIENT_ID = '__lump_sum_transient__';
 
   while (beforeOrEqual(year, month, endMonth.year, endMonth.month)) {
     const fy = getFinancialYear(year, month);
@@ -195,21 +235,59 @@ export function project(scenario: Scenario): ProjectionResult {
     }
     const rates = currentFYRates!;
 
+    // Reset FY accumulators at start of FY (July); capture previous FY metadata first
+    if (month === 7) {
+      if (fyMetadataByYear.length > 0 || fyGrossShortfall > 0 || fySecondaryCash > 0 || fySecondarySuper > 0 || fyLumpSum > 0) {
+        const prevFy = getFinancialYear(year, 7) - 1;
+        fyMetadataByYear.push({
+          fy: prevFy,
+          fyGrossShortfall,
+          fySecondaryCash,
+          fySecondaryFixedInterest,
+          fySecondarySuper,
+          fySecondaryShares,
+          fySecondaryProperty,
+          fyLumpSum,
+        });
+      }
+      fyTotalNeeded = 0;
+      fyTotalUnavoidable = 0;
+      fyScheduledNet = 0;
+      fyExpenses = 0;
+      fyTax = 0;
+      fyPension = 0;
+      fyAssetIncome = 0;
+      fyGrossShortfall = 0;
+      fyMonthlyAdditionalDrawTarget = null;
+      fyAnnualExpenses = 0;
+      fyActualMinABPDrawn = 0;
+      fyActualAdditionalABPDrawn = 0;
+      fyActualCentrelink = 0;
+      fyActualAssetIncome = 0;
+      fyActualTax = 0;
+      fySecondaryCash = 0;
+      fySecondaryFixedInterest = 0;
+      fySecondarySuper = 0;
+      fySecondaryShares = 0;
+      fySecondaryProperty = 0;
+      fyLumpSum = 0;
+    }
+
     // Years elapsed since projection start (for growth/inflation indexing)
     const monthsElapsed = (year - startYear) * 12 + (month - startMonth);
 
     // ── Step 1: Age persons, check life event triggers ─────────────────
 
     for (const ps of personState.values()) {
-      ps.age = year - ps.person.date_of_birth_year + (month > 6 ? 0 : -1);
-      // More precise: age is year of current birthday
-      ps.age = calculateAge(ps.person.date_of_birth_year, year, month);
+      ps.age = calculateAge(ps.person.date_of_birth, year, month);
 
-      if (
-        !ps.isRetired &&
-        ps.person.intended_retirement_age != null &&
-        ps.age >= ps.person.intended_retirement_age
-      ) {
+      // Retirement occurs in the month person turns retirement age (default: birth month).
+      // First month of retirement = month after retirement month (e.g. retire Sept → first retirement month Oct).
+      const retirementAge = ps.person.intended_retirement_age ?? 67;
+      const retirementYear = getBirthYearFromDate(ps.person.date_of_birth) + retirementAge;
+      const retirementMonth = ps.person.intended_retirement_month ?? getBirthMonthFromDate(ps.person.date_of_birth);
+      const shouldRetire = (year > retirementYear) || (year === retirementYear && month > retirementMonth);
+      if (!ps.isRetired && ps.person.intended_retirement_age != null && shouldRetire) {
         ps.isRetired = true;
         ps.person.employment_status = 'retired';
       }
@@ -223,8 +301,9 @@ export function project(scenario: Scenario): ProjectionResult {
     for (const income of incomes) {
       const ps = personState.get(income.person_id);
       if (!ps) continue;
-      if (income.start_year != null && year < income.start_year) continue;
-      if (income.end_year != null && year > income.end_year) continue;
+      // FY-aligned: start_year = from July of that year; end_year = through June of that year
+      if (income.start_year != null && (year < income.start_year || (year === income.start_year && month < 7))) continue;
+      if (income.end_year != null && (year > income.end_year || (year === income.end_year && month > 6))) continue;
 
       const isEmployment = income.income_type === 'employment' || income.income_type === 'self_employment';
       if (ps.isRetired && isEmployment) continue;
@@ -249,6 +328,54 @@ export function project(scenario: Scenario): ProjectionResult {
       }
     }
 
+    // ── Step 2.5: Super lump sum withdrawals (before super calc so earnings/drawdown use reduced balance)
+    const lumpSumByPerson = new Map<string, number>();
+    for (const cf of scheduledCashFlows) {
+      if (cf.year === year && month === 7 && cf.source === 'super') {
+        const amt = Math.abs(cf.amount);
+        const pid = cf.person_id ?? members[0]?.id;
+        if (pid && amt > 0) {
+          const idx = superFunds.findIndex(f => f.person_id === pid);
+          if (idx >= 0) {
+            const withdraw = Math.min(amt, superFunds[idx].balance);
+            superFunds[idx] = { ...superFunds[idx], balance: Math.max(0, superFunds[idx].balance - withdraw) };
+            lumpSumByPerson.set(pid, (lumpSumByPerson.get(pid) ?? 0) + withdraw);
+          }
+        }
+      }
+    }
+
+    // Lump sum proceeds → cash pool (processDeficit draws from it in normal order)
+    const totalLumpSumThisMonth = Array.from(lumpSumByPerson.values()).reduce((s, v) => s + v, 0);
+    if (totalLumpSumThisMonth > 0) {
+      const cashAsset = assets.find(a => a.asset_class === 'cash');
+      if (cashAsset) {
+        cashAsset.current_value += totalLumpSumThisMonth;
+      } else if (scenario.projection_scope === 'super_only') {
+        // Super_only with no cash asset: create transient cash for this month only
+        assets.push({
+          id: LUMP_SUM_TRANSIENT_ID,
+          name: 'Lump sum proceeds (transient)',
+          asset_class: 'cash',
+          current_value: totalLumpSumThisMonth,
+          cost_base: 0,
+          ownership_type: 'individual',
+          owner_id: members[0]?.id ?? null,
+          ownership_split: {},
+          growth_rate: 0,
+          income_yield: 0,
+          franking_rate: 0,
+          expense_ratio: 0,
+          is_centrelink_assessable: false,
+          is_deemed: false,
+          is_primary_residence: false,
+          funded_by_liability_id: null,
+          is_lifestyle_asset: false,
+          depreciation_rate: 0,
+        });
+      }
+    }
+
     // ── Step 3 & 4: Super (SG + voluntary contributions) ──────────────
 
     const superResults = new Map<string, SuperMonthResult>();
@@ -260,6 +387,10 @@ export function project(scenario: Scenario): ProjectionResult {
 
       const monthlyEmpIncome = monthlyIncomeByPerson.get(fund.person_id) ?? 0;
       const monthlySS = monthlySalarySacByPerson.get(fund.person_id) ?? 0;
+
+      const retirementAge = ps.person.intended_retirement_age ?? 67;
+      const retirementYear = getBirthYearFromDate(ps.person.date_of_birth) + retirementAge;
+      const retirementMonth = ps.person.intended_retirement_month ?? getBirthMonthFromDate(ps.person.date_of_birth);
 
       const superOut = calculateSuperMonth({
         fund,
@@ -278,18 +409,31 @@ export function project(scenario: Scenario): ProjectionResult {
         fyStartBalance: ps.fyStartSuperBalance,
         catchUpState: ps.catchUpState,
         bringForwardState: ps.bringForwardState,
+        retirementMonth,
+        retirementYear,
       });
 
       superResults.set(fund.person_id, superOut.result);
       ps.fyContributions = superOut.updatedFYContributions;
       ps.bringForwardState = superOut.updatedBringForwardState;
 
-      // Update fund balance for next month
-      superFunds[i] = {
+      // Update fund balance for next month; set pension_start_balance when transitioning to pension
+      let updatedFund: typeof fund = {
         ...fund,
         balance: superOut.result.closingBalance,
         phase: superOut.result.phase,
       };
+      if (fund.phase === 'accumulation' && superOut.result.phase === 'pension') {
+        updatedFund = { ...updatedFund, pension_start_balance: fund.balance };
+      }
+      if (month === 7 && fund.phase === 'pension') {
+        updatedFund = {
+          ...updatedFund,
+          pension_start_balance: null,
+          fy_opening_balance: fund.balance,
+        };
+      }
+      superFunds[i] = updatedFund;
 
       // Salary sacrifice reduces taxable employment income
       if (monthlySS > 0) {
@@ -329,10 +473,26 @@ export function project(scenario: Scenario): ProjectionResult {
     const fyIndex = fy - getFinancialYear(startYear, startMonth);
     const inflationFactor = Math.pow(1 + assumptions.inflation_rate, Math.max(0, fyIndex));
 
+    const primaryMember = scenario.household.members[0];
+    const primaryRetirementAge = primaryMember?.intended_retirement_age ?? 67;
+    const primaryRetirementYear = primaryMember
+      ? getBirthYearFromDate(primaryMember.date_of_birth) + primaryRetirementAge
+      : 0;
+    const primaryRetirementMonth = primaryMember
+      ? (primaryMember.intended_retirement_month ?? getBirthMonthFromDate(primaryMember.date_of_birth))
+      : 12;
+    const isSuperOnly = scenario.projection_scope === 'super_only';
+    const isInTransitionFY = primaryRetirementYear > 0 && fy === getFinancialYear(primaryRetirementYear, primaryRetirementMonth);
+    const isRetiredThisMonth = (year > primaryRetirementYear) || (year === primaryRetirementYear && month > primaryRetirementMonth);
+
     let totalExpenses = 0;
     for (const exp of expenses) {
-      if (exp.start_year != null && year < exp.start_year) continue;
-      if (exp.end_year != null && year > exp.end_year) continue;
+      // start_year / end_year = financial year (e.g. 2026 = July 2025–June 2026)
+      if (exp.start_year != null && fy < exp.start_year) continue;
+      if (exp.end_year != null && fy > exp.end_year) continue;
+
+      // Super-only transition year: apply retirement expenses only for months when person is retired
+      if (isSuperOnly && isInTransitionFY && exp.start_year != null && !isRetiredThisMonth) continue;
 
       let monthlyAmount = exp.annual_amount / 12;
       if (exp.inflation_adjusted) {
@@ -341,11 +501,10 @@ export function project(scenario: Scenario): ProjectionResult {
       totalExpenses += monthlyAmount;
     }
 
-    // One-off scheduled cash flows for this month
+    // One-off scheduled cash flows for this month (general only; super lump sums handled above)
     let scheduledNet = 0;
     for (const cf of scheduledCashFlows) {
-      // Scheduled cash flows trigger in July of their year
-      if (cf.year === year && month === 7) {
+      if (cf.year === year && month === 7 && cf.source !== 'super') {
         scheduledNet += cf.amount;
       }
     }
@@ -398,6 +557,7 @@ export function project(scenario: Scenario): ProjectionResult {
         : 0;
       ps.fyCentrelinkPayments += clMonthlyPerPerson;
 
+      const lumpSumThisMonth = lumpSumByPerson.get(ps.person.id) ?? 0;
       const detail: PersonMonthDetail = {
         person_id: ps.person.id,
         age: ps.age,
@@ -406,10 +566,11 @@ export function project(scenario: Scenario): ProjectionResult {
         super_sg_contributions: sr?.employerSG ?? 0,
         super_voluntary_concessional: (sr?.voluntaryConcessional ?? 0) + (sr?.salarySacrifice ?? 0),
         super_voluntary_non_concessional: sr?.voluntaryNonConcessional ?? 0,
-        super_balance: sr?.closingBalance ?? (superFunds.find(f => f.person_id === ps.person.id)?.balance ?? 0),
+        super_balance: superFunds.find(f => f.person_id === ps.person.id)?.balance ?? sr?.closingBalance ?? 0,
         super_investment_return: sr ? (sr.grossEarnings - sr.earningsTax) : 0,
         super_fees: sr ? (sr.adminFees + sr.insurancePremium) : 0,
         super_pension_drawdown: pensionDrawdown,
+        super_lump_sum_withdrawal: lumpSumThisMonth,
         taxable_income: 0,
         tax_payable: 0,
         medicare_levy: 0,
@@ -509,8 +670,6 @@ export function project(scenario: Scenario): ProjectionResult {
         );
 
         // Reset FY accumulators
-        const nextFund = superFunds.find(f => f.person_id === ps.person.id);
-        ps.fyStartSuperBalance = nextFund?.balance ?? 0;
         ps.fyEmploymentIncome = 0;
         ps.fyAssetIncome = 0;
         ps.fySuperPensionDrawdown = 0;
@@ -621,24 +780,290 @@ export function project(scenario: Scenario): ProjectionResult {
       totalVolConcessional -
       totalNCC;
 
-    // ── Steps 12 & 13: Surplus or deficit allocation ──────────────────
+    // Accumulate FY totals for annual surplus/deficit
+    fyTotalNeeded +=
+      totalExpenses +
+      totalLoanRepayments +
+      totalPayg +
+      totalSGContrib +
+      totalVolConcessional +
+      totalNCC;
+    fyTotalUnavoidable += totalGrossIncome;
+    fyScheduledNet += scheduledNet;
+    fyExpenses += totalExpenses;
+    fyTax += totalPayg;
+    fyPension += totalCentrelinkPayments;
+    fyAssetIncome += totalAssetIncome;
+
+    // ── Pass 1: FY pre-compute for two-pass additional ABP (super_only, retired) ─
+    if (isSuperOnly && fyMonthlyAdditionalDrawTarget === null) {
+      const primaryId = members[0]?.id;
+      const primaryPs = primaryId ? personState.get(primaryId) : null;
+      const primaryFund = primaryId ? superFunds.find(f => f.person_id === primaryId) : null;
+
+      if (primaryPs && primaryPs.isRetired) {
+        if (isInTransitionFY && isRetiredThisMonth) {
+          // Transition year: first retirement month in FY
+          const pensionStartBalance = primaryFund?.pension_start_balance ?? null;
+          if (pensionStartBalance != null && pensionStartBalance > 0) {
+            const firstRetMonth = primaryRetirementMonth === 12 ? 1 : primaryRetirementMonth + 1;
+            const monthsInPension = firstRetMonth <= 6
+              ? 7 - firstRetMonth
+              : (12 - firstRetMonth + 1) + 6;
+            const minRate = getMinimumDrawdownRate(primaryPs.age);
+            const annualMinABP = pensionStartBalance * minRate * (monthsInPension / 12);
+
+            const annualExpenses = totalExpenses * monthsInPension;
+            fyAnnualExpenses = annualExpenses;
+            const monthsElapsed = month - 6;
+            const scale = monthsElapsed > 0 ? 12 / monthsElapsed : 1;
+            const annualEmploymentIncome = primaryPs.fyEmploymentIncome * scale;
+            const annualAssetIncome = primaryPs.fyAssetIncome * scale;
+            const annualCentrelink = primaryPs.fyCentrelinkPayments * scale;
+
+            const annualTaxableIncome = annualEmploymentIncome + annualCentrelink + annualAssetIncome;
+            const annualFranking = primaryPs.fyFrankingCredits * scale;
+            const annualDeductions = primaryPs.fyDeductions * scale;
+
+            let annualNetPassive = annualCentrelink + annualAssetIncome;
+            if (annualTaxableIncome > 0) {
+              const grossPerPerson = isCouple ? annualTaxableIncome / 2 : annualTaxableIncome;
+              const frankingPerPerson = isCouple ? annualFranking / 2 : annualFranking;
+              const deductionsPerPerson = isCouple ? annualDeductions / 2 : annualDeductions;
+              const taxResult = calculateIndividualTax({
+                grossIncome: grossPerPerson,
+                deductions: deductionsPerPerson,
+                frankingCredits: frankingPerPerson,
+                isCouple,
+                numDependents,
+                age: primaryPs.age,
+                receivesAgePension: annualCentrelink > 0,
+                hasHecs: primaryPs.person.has_hecs_help_debt,
+                hecsBalance: primaryPs.person.hecs_help_balance,
+                reportableSuperContributions: 0,
+                taxBrackets: rates.tax.brackets,
+              });
+              const annualTotalTax = isCouple ? 2 * taxResult.totalTax : taxResult.totalTax;
+              const effectiveRate = annualTotalTax / annualTaxableIncome;
+              annualNetPassive = annualCentrelink * (1 - effectiveRate) + annualAssetIncome * (1 - effectiveRate);
+            }
+
+            const annualGrossShortfall = Math.max(
+              0,
+              annualExpenses - annualMinABP - annualNetPassive,
+            );
+            fyMonthlyAdditionalDrawTarget = annualGrossShortfall / monthsInPension;
+          }
+        } else if (!isInTransitionFY && month === 7) {
+          // Full retirement year: at FY start (use fy_opening_balance to match super.ts)
+          const openingBal = primaryFund?.fy_opening_balance ?? primaryPs.fyStartSuperBalance;
+          if (openingBal > 0) {
+            const minRate = getMinimumDrawdownRate(primaryPs.age);
+            const annualMinABP = openingBal * minRate;
+            const annualExpenses = totalExpenses * 12;
+            fyAnnualExpenses = annualExpenses;
+            const annualAssetIncome = totalAssetIncome * 12;
+            const annualCentrelink = totalCentrelinkPayments * 12;
+
+            const annualTaxableIncome = annualCentrelink + annualAssetIncome;
+
+            const primaryDetail = personDetails.find(d => d.person_id === primaryId);
+            const annualFranking = (primaryDetail?.franking_credits ?? 0) * 12;
+            const annualDeductions = (primaryDetail?.deductions ?? 0) * 12;
+
+            let annualNetPassive = annualCentrelink + annualAssetIncome;
+            if (annualTaxableIncome > 0) {
+              const grossPerPerson = isCouple ? annualTaxableIncome / 2 : annualTaxableIncome;
+              const frankingPerPerson = isCouple ? annualFranking / 2 : annualFranking;
+              const deductionsPerPerson = isCouple ? annualDeductions / 2 : annualDeductions;
+              const taxResult = calculateIndividualTax({
+                grossIncome: grossPerPerson,
+                deductions: deductionsPerPerson,
+                frankingCredits: frankingPerPerson,
+                isCouple,
+                numDependents,
+                age: primaryPs.age,
+                receivesAgePension: annualCentrelink > 0,
+                hasHecs: primaryPs.person.has_hecs_help_debt,
+                hecsBalance: primaryPs.person.hecs_help_balance,
+                reportableSuperContributions: 0,
+                taxBrackets: rates.tax.brackets,
+              });
+              const annualTotalTax = isCouple ? 2 * taxResult.totalTax : taxResult.totalTax;
+              const effectiveRate = annualTotalTax / annualTaxableIncome;
+              annualNetPassive = annualCentrelink * (1 - effectiveRate) + annualAssetIncome * (1 - effectiveRate);
+            }
+
+            const annualGrossShortfall = Math.max(
+              0,
+              annualExpenses - annualMinABP - annualNetPassive,
+            );
+            fyMonthlyAdditionalDrawTarget = annualGrossShortfall / 12;
+          }
+        }
+      }
+    }
+
+    // ── Step 15: Grow/revalue all assets (before surplus/deficit so drawdown is not overwritten)
+    for (let i = 0; i < assets.length; i++) {
+      const ar = assetResults.find(r => r.assetId === assets[i].id);
+      if (ar) {
+        assets[i] = growAsset(assets[i], ar);
+      }
+    }
+
+    // ── Steps 12 & 13: Surplus or deficit allocation ────────────────────────
+    // Deficit: monthly. Surplus: annual (June only).
 
     const surplusRules = allocationRules?.surplus_priority ?? DEFAULT_SURPLUS_RULES;
-    const drawdownRules = allocationRules?.drawdown_priority ?? DEFAULT_DRAWDOWN_RULES;
+    const drawdownRules =
+      (allocationRules?.drawdown_priority?.length ?? 0) > 0
+        ? allocationRules!.drawdown_priority
+        : scenario.projection_scope === 'super_only'
+          ? SUPER_ONLY_DRAWDOWN_RULES
+          : DEFAULT_DRAWDOWN_RULES;
+    let additionalSuperDrawdownFromDeficit = 0;
+    let drawdownCashThisMonth = 0;
+    let drawdownSaleThisMonth = 0;
 
-    if (netCashFlow > 0) {
-      const actions = allocateSurplus(
-        netCashFlow,
-        surplusRules,
-        assets,
-        liabilities,
-        totalExpenses,
-      );
+    // Monthly deficit processing: monthlyAmountToDraw = monthlyGrossShortfall (no lump sum netting)
+    // Cash available from earned+passive is net of tax; deficit = expenses - (gross - tax) - scheduledNet
+    const monthlyEarnedIncome = totalEmploymentIncome;
+    const monthlyPassiveIncome = totalAssetIncome + totalCentrelinkPayments + totalSuperPension;
+    // Two-pass: use pre-computed monthly target for super-only retired FYs (avoids over-draw from reactive logic)
+    const useTwoPass =
+      isSuperOnly &&
+      isRetiredThisMonth &&
+      fyMonthlyAdditionalDrawTarget != null &&
+      fyMonthlyAdditionalDrawTarget >= 0;
 
-      for (const action of actions) {
-        applyAllocationAction(action, assets, liabilities, superFunds);
+    // Tax for shortfall: reactive+retired use estimated monthly tax (totalPayg is 0 for retirees in non-June)
+    let taxForShortfall = totalPayg;
+    if (!useTwoPass && isRetiredThisMonth) {
+      const annualEmploymentIncome = totalEmploymentIncome * 12;
+      const annualPassive = (totalAssetIncome + totalCentrelinkPayments) * 12;
+      const annualTaxableIncome = annualEmploymentIncome + annualPassive;
+      if (annualTaxableIncome > 0) {
+        const primaryId = members[0]?.id;
+        const primaryPs = primaryId ? personState.get(primaryId) : null;
+        if (primaryPs) {
+          const monthsElapsed = month - 6;
+          const scale = monthsElapsed > 0 ? 12 / monthsElapsed : 1;
+          const annualFranking = primaryPs.fyFrankingCredits * scale;
+          const annualDeductions = primaryPs.fyDeductions * scale;
+          const grossPerPerson = isCouple ? annualTaxableIncome / 2 : annualTaxableIncome;
+          const frankingPerPerson = isCouple ? annualFranking / 2 : annualFranking;
+          const deductionsPerPerson = isCouple ? annualDeductions / 2 : annualDeductions;
+          const taxResult = calculateIndividualTax({
+            grossIncome: grossPerPerson,
+            deductions: deductionsPerPerson,
+            frankingCredits: frankingPerPerson,
+            isCouple,
+            numDependents,
+            age: primaryPs.age,
+            receivesAgePension: annualPassive > 0,
+            hasHecs: primaryPs.person.has_hecs_help_debt,
+            hecsBalance: primaryPs.person.hecs_help_balance,
+            reportableSuperContributions: 0,
+            taxBrackets: rates.tax.brackets,
+          });
+          const annualTotalTax = isCouple ? 2 * taxResult.totalTax : taxResult.totalTax;
+          taxForShortfall = annualTotalTax / 12;
+        }
       }
-    } else if (netCashFlow < 0) {
+    }
+
+    const monthlyGrossShortfall = Math.max(
+      0,
+      totalExpenses - monthlyEarnedIncome - monthlyPassiveIncome - scheduledNet + taxForShortfall,
+    );
+
+    // Step 4: Accumulate actual income (outside deficit block) — runs first, includes this month
+    if (useTwoPass) {
+      fyActualMinABPDrawn += totalSuperPension;
+      fyActualCentrelink += totalCentrelinkPayments;
+      fyActualAssetIncome += totalAssetIncome;
+      fyActualTax += totalPayg;
+    }
+
+    // Mid-year recalibration at Centrelink reassessment points (September, March)
+    if (useTwoPass && isRetiredThisMonth && (month === 9 || month === 3) && fyAnnualExpenses > 0) {
+      const primaryId = members[0]?.id;
+      const primaryPs = primaryId ? personState.get(primaryId) : null;
+      if (primaryPs) {
+        const firstRetMonth = primaryRetirementMonth === 12 ? 1 : primaryRetirementMonth + 1;
+        const monthsElapsed = isInTransitionFY
+          ? (month <= 6 ? (12 - firstRetMonth + 1) + month : month - firstRetMonth + 1)
+          : (month <= 6 ? month + 6 : month - 6);
+        const monthsInPension = isInTransitionFY
+          ? (firstRetMonth <= 6 ? 7 - firstRetMonth : (12 - firstRetMonth + 1) + 6)
+          : 12;
+        const monthsRemaining = monthsInPension - monthsElapsed;
+
+        const totalTaxableActual = fyActualCentrelink + fyActualAssetIncome;
+        const effectiveRateActual = totalTaxableActual > 0 ? fyActualTax / totalTaxableActual : 0;
+        const netPassiveReceivedSoFar = totalTaxableActual * (1 - effectiveRateActual);
+
+        const currentMonthlyPassive = totalCentrelinkPayments + totalAssetIncome;
+        const grossPerPerson = isCouple ? (currentMonthlyPassive * 12) / 2 : currentMonthlyPassive * 12;
+        const taxResult = calculateIndividualTax({
+          grossIncome: grossPerPerson,
+          deductions: 0,
+          frankingCredits: 0,
+          isCouple,
+          numDependents,
+          age: primaryPs.age,
+          receivesAgePension: totalCentrelinkPayments > 0,
+          hasHecs: primaryPs.person.has_hecs_help_debt ?? false,
+          hecsBalance: primaryPs.person.hecs_help_balance ?? 0,
+          reportableSuperContributions: 0,
+          taxBrackets: rates.tax.brackets,
+        });
+        const annualTaxOnCurrentPassive = isCouple ? 2 * taxResult.totalTax : taxResult.totalTax;
+        const effectiveRateCurrent =
+          currentMonthlyPassive * 12 > 0 ? annualTaxOnCurrentPassive / (currentMonthlyPassive * 12) : 0;
+        // Project passive for remaining months only; current month's passive is in netPassiveReceivedSoFar
+        const netPassiveRemainingProjected =
+          currentMonthlyPassive * (1 - effectiveRateCurrent) * monthsRemaining;
+
+        const remainingMinABP =
+          fyActualMinABPDrawn > 0 ? (fyActualMinABPDrawn / monthsElapsed) * monthsRemaining : 0;
+
+        const incomeSecured =
+          fyActualMinABPDrawn +
+          fyActualAdditionalABPDrawn +
+          netPassiveReceivedSoFar +
+          remainingMinABP +
+          netPassiveRemainingProjected;
+
+        const remainingShortfall = Math.max(0, fyAnnualExpenses - incomeSecured);
+
+        const monthsToDistribute = monthsRemaining + 1; // current month + remaining months
+        fyMonthlyAdditionalDrawTarget =
+          monthsToDistribute > 0 ? remainingShortfall / monthsToDistribute : 0;
+      }
+    }
+
+    let monthlyAmountToDraw = useTwoPass
+      ? fyMonthlyAdditionalDrawTarget!
+      : monthlyGrossShortfall;
+
+    // Step 5: June true-up — close FY to fyAnnualExpenses (min ABP + additional ABP + net passive)
+    // Use remainingAllowable as the June draw, not min(target, remainingAllowable): when
+    // remainingAllowable > target (EOFY tax, recalibration lag), min() under-funded the FY
+    // (see debug H3_JuneFYEnd shortfallVsCap > 0 while super balance positive).
+    if (useTwoPass && month === 6 && isRetiredThisMonth && fyAnnualExpenses > 0) {
+      const totalTaxableActual = fyActualCentrelink + fyActualAssetIncome;
+      const effectiveRateActual = totalTaxableActual > 0
+        ? fyActualTax / totalTaxableActual
+        : 0;
+      const netPassiveActual = totalTaxableActual * (1 - effectiveRateActual);
+      const incomeAccountedFor = fyActualMinABPDrawn + fyActualAdditionalABPDrawn + netPassiveActual;
+      const remainingAllowable = Math.max(0, fyAnnualExpenses - incomeAccountedFor);
+      monthlyAmountToDraw = remainingAllowable;
+    }
+
+    if (monthlyAmountToDraw > 0) {
       const anySuperAccessible = Array.from(personState.values()).some(ps =>
         isSuperAccessible(ps.age, assumptions.super_preservation_age, ps.isRetired),
       );
@@ -652,15 +1077,36 @@ export function project(scenario: Scenario): ProjectionResult {
           .map(f => ({ person_id: f.person_id, balance: f.balance }))
         : [];
 
+      // Pass full target to processDeficit; it cascades cash → super, capping each source
+      // by its own balance. Residual (if sources exhausted) is genuine shortfall.
+      const amountToPass = monthlyAmountToDraw;
+
       const deficitResult = processDeficit(
-        Math.abs(netCashFlow),
+        amountToPass,
         drawdownRules,
         assets,
         liabilities,
         { superAccessible: anySuperAccessible, superFunds: accessibleSuperFunds },
       );
 
+      let monthlySecondaryCash = 0;
+      let monthlySecondaryFixedInterest = 0;
+      let monthlySecondaryShares = 0;
+      let monthlySecondaryProperty = 0;
       for (const action of deficitResult.actions) {
+        if (action.action === 'draw_cash') {
+          drawdownCashThisMonth += action.amount;
+          monthlySecondaryCash += action.amount;
+        } else if (action.action === 'draw_fixed_interest') {
+          drawdownCashThisMonth += action.amount;
+          monthlySecondaryFixedInterest += action.amount;
+        } else if (action.action === 'draw_shares') {
+          drawdownSaleThisMonth += action.amount;
+          monthlySecondaryShares += action.amount;
+        } else if (action.action === 'dispose_property') {
+          drawdownSaleThisMonth += action.amount;
+          monthlySecondaryProperty += action.amount;
+        }
         if (action.action === 'draw_super') continue;
         applyDrawdownAction(action, assets, liabilities);
       }
@@ -674,8 +1120,17 @@ export function project(scenario: Scenario): ProjectionResult {
           };
         }
       }
+      additionalSuperDrawdownFromDeficit = deficitResult.super_drawdowns.reduce(
+        (s, sd) => s + sd.amount,
+        0,
+      );
 
-      // Step 14: CGT from deficit disposals
+      // Step 6: Accumulate additional ABP drawn (inside deficit block, after processDeficit)
+      if (useTwoPass) {
+        fyActualAdditionalABPDrawn += additionalSuperDrawdownFromDeficit;
+      }
+
+      // CGT from deficit disposals
       for (const cgtEvent of deficitResult.cgt_events) {
         const ownerAsset = assets.find(a => a.id === cgtEvent.asset_id);
         if (ownerAsset?.owner_id) {
@@ -686,24 +1141,73 @@ export function project(scenario: Scenario): ProjectionResult {
         }
       }
 
-      if (deficitResult.actions.length === 0 && Math.abs(netCashFlow) > 0.01) {
+      if (deficitResult.actions.length === 0 && monthlyAmountToDraw > 0.01) {
         warnings.push(
-          `${year}-${String(month).padStart(2, '0')}: Cannot fund deficit of $${Math.abs(netCashFlow).toFixed(0)} — insufficient liquid assets`,
+          `${year}-${String(month).padStart(2, '0')}: Cannot fund deficit of $${monthlyAmountToDraw.toFixed(0)} — insufficient liquid assets`,
         );
+      }
+
+      // Accumulate FY metadata (secondary sources)
+      fySecondaryCash += monthlySecondaryCash;
+      fySecondaryFixedInterest += monthlySecondaryFixedInterest;
+      fySecondarySuper += additionalSuperDrawdownFromDeficit;
+      fySecondaryShares += monthlySecondaryShares;
+      fySecondaryProperty += monthlySecondaryProperty;
+    }
+    fyGrossShortfall += monthlyGrossShortfall;
+    fyLumpSum += totalLumpSumThisMonth;
+
+    // Surplus allocation: annual only (June)
+    if (month === 6) {
+      const totalFYEmploymentIncome = Array.from(personState.values()).reduce((s, ps) => s + ps.fyEmploymentIncome, 0);
+      const surplusIncome = scenario.projection_scope === 'super_only'
+        ? fyTotalUnavoidable - totalFYEmploymentIncome
+        : fyTotalUnavoidable;
+      const fySurplus = Math.max(
+        0,
+        surplusIncome + fyScheduledNet - fyTotalNeeded,
+      );
+
+      if (fySurplus > 0) {
+        // Only allocate surplus in the first retirement-year FY (chart "year 1") — never accumulation or later years.
+        const primaryMemberForSurplus = scenario.household.members[0];
+        const retirementAgeForSurplus = primaryMemberForSurplus?.intended_retirement_age ?? 67;
+        const primaryRetirementYearForSurplus = primaryMemberForSurplus
+          ? getBirthYearFromDate(primaryMemberForSurplus.date_of_birth) + retirementAgeForSurplus
+          : 0;
+        const primaryRetirementMonthForSurplus = primaryMemberForSurplus
+          ? (primaryMemberForSurplus.intended_retirement_month ?? getBirthMonthFromDate(primaryMemberForSurplus.date_of_birth))
+          : 12;
+        const firstRetMonth = primaryRetirementMonthForSurplus === 12 ? 1 : primaryRetirementMonthForSurplus + 1;
+        const firstRetYear = primaryRetirementMonthForSurplus === 12 ? primaryRetirementYearForSurplus + 1 : primaryRetirementYearForSurplus;
+        const firstRetirementFY = getFinancialYear(firstRetYear, firstRetMonth);
+        const isFirstRetirementFY = primaryRetirementYearForSurplus > 0 && fy === firstRetirementFY;
+        const skipSurplusAllocation = totalExpenses === 0 || !isFirstRetirementFY;
+
+        if (!skipSurplusAllocation) {
+          const actions = allocateSurplus(
+            fySurplus,
+            surplusRules,
+            assets,
+            liabilities,
+            totalExpenses,
+          );
+          for (const action of actions) {
+            applyAllocationAction(action, assets, liabilities, superFunds);
+          }
+        }
+      }
+    }
+
+    if (month === 6) {
+      for (const ps of personState.values()) {
+        const nextFund = superFunds.find(f => f.person_id === ps.person.id);
+        ps.fyStartSuperBalance = nextFund?.balance ?? 0;
       }
     }
 
     // ── Step 14: Scheduled disposal events and CGT ────────────────────
     // (Handled above for deficit drawdown; scheduled disposals handled via scheduled_cash_flows)
-
-    // ── Step 15: Grow/revalue all assets ──────────────────────────────
-
-    for (let i = 0; i < assets.length; i++) {
-      const ar = assetResults.find(r => r.assetId === assets[i].id);
-      if (ar) {
-        assets[i] = growAsset(assets[i], ar);
-      }
-    }
 
     // Update liabilities
     for (let i = 0; i < liabilities.length; i++) {
@@ -713,26 +1217,34 @@ export function project(scenario: Scenario): ProjectionResult {
       }
     }
 
+    // Remove transient lump-sum cash asset (super_only) so it is not persisted
+    const transientIdx = assets.findIndex(a => a.id === LUMP_SUM_TRANSIENT_ID);
+    if (transientIdx >= 0) {
+      assets.splice(transientIdx, 1);
+    }
+
     // ── Record MonthSnapshot ──────────────────────────────────────────
 
     const totalAssets = assets.reduce((s, a) => s + a.current_value, 0);
     const totalSuper = superFunds.reduce((s, f) => s + f.balance, 0);
     const totalLiabilities = liabilities.reduce((s, l) => s + l.current_balance, 0);
+    const lumpSumThisMonth = personDetails.reduce((s, p) => s + (p.super_lump_sum_withdrawal ?? 0), 0);
 
     const snapshot: MonthSnapshot = {
       year,
       month,
       persons: personDetails,
 
-      total_gross_income: totalGrossIncome,
+      total_gross_income: totalGrossIncome + additionalSuperDrawdownFromDeficit,
       total_employment_income: totalEmploymentIncome,
       total_asset_income: totalAssetIncome,
       total_centrelink_payments: totalCentrelinkPayments,
-      total_super_pension_income: totalSuperPension,
+      total_super_pension_income: totalSuperPension + additionalSuperDrawdownFromDeficit,
       total_expenses: totalExpenses,
       total_loan_repayments: totalLoanRepayments,
       total_tax: totalPayg,
       scheduled_cashflows_net: scheduledNet,
+      lump_sum_withdrawals_this_month: lumpSumThisMonth,
       net_cash_flow: netCashFlow,
 
       total_assets: totalAssets,
@@ -746,6 +1258,10 @@ export function project(scenario: Scenario): ProjectionResult {
 
       asset_values: Object.fromEntries(assets.map(a => [a.id, a.current_value])),
       liability_balances: Object.fromEntries(liabilities.map(l => [l.id, l.current_balance])),
+
+      drawdown_cash_this_month: drawdownCashThisMonth,
+      drawdown_sale_this_month: drawdownSaleThisMonth,
+      drawdown_super_additional_this_month: additionalSuperDrawdownFromDeficit,
     };
 
     snapshots.push(snapshot);
@@ -754,8 +1270,34 @@ export function project(scenario: Scenario): ProjectionResult {
     ({ year, month } = nextMonth(year, month));
   }
 
+  // Push final FY metadata (loop ended before next July)
+  const lastSnapForFy = snapshots[snapshots.length - 1];
+  if (lastSnapForFy && (fyGrossShortfall > 0 || fySecondaryCash > 0 || fySecondarySuper > 0 || fyLumpSum > 0)) {
+    const lastFy = getFinancialYear(lastSnapForFy.year, lastSnapForFy.month);
+    fyMetadataByYear.push({
+      fy: lastFy,
+      fyGrossShortfall,
+      fySecondaryCash,
+      fySecondaryFixedInterest,
+      fySecondarySuper,
+      fySecondaryShares,
+      fySecondaryProperty,
+      fyLumpSum,
+    });
+  }
+
   // Determine end year from last snapshot
   const lastSnap = snapshots[snapshots.length - 1];
+
+  const primaryMember = scenario.household.members[0];
+  const retirementAge =
+    primaryMember?.intended_retirement_age ?? 67;
+
+  const retirementExpense = scenario.expenses.find(
+    (e) => e.name === 'Retirement expenses',
+  );
+  const retirementSpendingTarget =
+    retirementExpense?.annual_amount ?? 0;
 
   return {
     scenario_name: scenario.name,
@@ -766,6 +1308,10 @@ export function project(scenario: Scenario): ProjectionResult {
     metadata: {
       total_months: snapshots.length,
       monthly_resolution: true,
+      retirement_age: retirementAge,
+      retirement_spending_target: retirementSpendingTarget,
+      projection_scope: scenario.projection_scope,
+      fy_metadata_by_year: fyMetadataByYear,
     },
   };
 }
@@ -803,7 +1349,7 @@ function calculateEndMonth(scenario: Scenario): { year: number; month: number } 
   const members = scenario.household.members;
 
   // Find youngest member
-  const youngestBirthYear = Math.max(...members.map(m => m.date_of_birth_year));
+  const youngestBirthYear = Math.max(...members.map(m => getBirthYearFromDate(m.date_of_birth)));
   const targetAge = 90;
   const endYear = youngestBirthYear + targetAge;
 
@@ -814,10 +1360,10 @@ function calculateEndMonth(scenario: Scenario): { year: number; month: number } 
   return { year: finalYear, month: 6 }; // End at June (EOFY)
 }
 
-function calculateAge(birthYear: number, currentYear: number, currentMonth: number): number {
-  // Simplified: assumes birthday is January. For monthly resolution
-  // we treat the age as changing at the start of each calendar year.
-  return currentYear - birthYear;
+function calculateAge(dateOfBirth: string, currentYear: number, currentMonth: number): number {
+  const [y, m] = dateOfBirth.split('-').map(Number);
+  if (currentMonth >= m) return currentYear - y;
+  return currentYear - y - 1;
 }
 
 function beforeOrEqual(y1: number, m1: number, y2: number, m2: number): boolean {
@@ -859,9 +1405,7 @@ function applyAllocationAction(
       break;
     }
     case 'super_contribution': {
-      const idx = superFunds.findIndex(f =>
-        f.person_id === action.target_id || f.id === action.target_id,
-      );
+      const idx = superFunds.findIndex(f => f.person_id === action.target_id);
       const targetIdx = idx >= 0 ? idx : 0;
       if (targetIdx < superFunds.length) {
         superFunds[targetIdx] = {

@@ -17,27 +17,7 @@ interface MetricDef {
 
 function getMetrics(summary: ProjectionSummary, intent: string | null): MetricDef[] {
   if (intent === 'super_longevity') {
-    return [
-      {
-        label: 'Super at retirement',
-        value: formatCurrencyFull(summary.final_super),
-      },
-      {
-        label: 'Super lasts until',
-        value: summary.depletion_age
-          ? `Age ${summary.depletion_age}`
-          : 'Beyond age 99',
-        positive: !summary.depletion_age,
-      },
-      {
-        label: 'Total pension received',
-        value: formatCurrencyFull(summary.total_pension),
-      },
-      {
-        label: 'Final net worth',
-        value: formatCurrencyFull(summary.final_net_worth),
-      },
-    ]
+    return [] // Metrics removed; only assumptions shown
   }
 
   if (['super_at_age', 'compare_retirement_age', 'fee_impact', 'compare_super_projection'].includes(intent ?? '')) {
@@ -119,8 +99,10 @@ function getMetrics(summary: ProjectionSummary, intent: string | null): MetricDe
 
 export function ProjectionSummaryCard({ summary, assumptions, intent }: Props) {
   const metrics = getMetrics(summary, intent)
+  const showMetrics = metrics.length > 0
+  const showAssumptions = assumptions.length > 0
 
-  if (metrics.length === 0) return null
+  if (!showMetrics && !showAssumptions) return null
 
   return (
     <div
@@ -132,14 +114,16 @@ export function ProjectionSummaryCard({ summary, assumptions, intent }: Props) {
         borderRadius: 'var(--radius-lg)',
       }}
     >
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        {metrics.map((m) => (
-          <Metric key={m.label} label={m.label} value={m.value} positive={m.positive} />
-        ))}
-      </div>
+      {showMetrics && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          {metrics.map((m) => (
+            <Metric key={m.label} label={m.label} value={m.value} positive={m.positive} />
+          ))}
+        </div>
+      )}
 
-      {assumptions.length > 0 && (
-        <div style={{ paddingTop: 10, marginTop: 12, borderTop: '1px solid var(--color-border)' }}>
+      {showAssumptions && (
+        <div style={{ paddingTop: showMetrics ? 10 : 0, marginTop: showMetrics ? 12 : 0, borderTop: showMetrics ? '1px solid var(--color-border)' : 'none' }}>
           <p style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 4 }}>Assumptions</p>
           <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
             {assumptions.map((a, i) => (

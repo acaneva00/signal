@@ -28,7 +28,7 @@ describe('models schemas', () => {
         members: [
           {
             id: 'person_1',
-            date_of_birth_year: 1980,
+            date_of_birth: '1980-01-01',
           },
         ],
       },
@@ -45,7 +45,7 @@ describe('models schemas', () => {
       expect(result.data.projection_years).toBe(30);
       expect(result.data.household.members).toHaveLength(1);
       expect(result.data.household.members[0].id).toBe('person_1');
-      expect(result.data.household.members[0].date_of_birth_year).toBe(1980);
+      expect(result.data.household.members[0].date_of_birth).toBe('1980-01-01');
       expect(result.data.household.members[0].name).toBe('');
       expect(result.data.household.members[0].gender).toBe('other');
       expect(result.data.household.relationship_status).toBe('single');
@@ -78,7 +78,7 @@ describe('models schemas', () => {
           {
             id: 'person_1',
             name: 'John Doe',
-            date_of_birth_year: 1985,
+            date_of_birth: '1985-01-01',
             gender: 'male',
             is_australian_resident: true,
             employment_status: 'employed',

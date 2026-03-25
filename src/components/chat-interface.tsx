@@ -1,7 +1,9 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
+import { useDefaultLayout } from 'react-resizable-panels'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import { ArrowUp, Plus, RotateCcw } from 'lucide-react'
 import { StructuredInput } from '@/components/chat/StructuredInput'
 import { Canvas } from '@/components/canvas/Canvas'
@@ -35,7 +37,7 @@ const EMPTY_CANVAS: CanvasData = {
 }
 
 const PROFILE_FIELDS = [
-  'date_of_birth_year', 'income', 'super_balance', 'intended_retirement_age',
+  'date_of_birth', 'income', 'super_balance', 'intended_retirement_age',
   'expenses', 'relationship_status', 'is_homeowner', 'has_hecs_help_debt',
   'hecs_help_balance', 'mortgage_balance', 'mortgage_rate', 'mortgage_repayment',
   'assets', 'liabilities', 'super_fees',
@@ -89,7 +91,16 @@ function renderMessageContent(content: string) {
   })
 }
 
+const CHAT_PANEL_ID = 'chat'
+const CANVAS_PANEL_ID = 'canvas'
+
 export function ChatInterface() {
+  const { defaultLayout, onLayoutChanged } = useDefaultLayout({
+    id: 'signal-chat-canvas-split',
+    storage: typeof window !== 'undefined' ? localStorage : undefined,
+    panelIds: [CHAT_PANEL_ID, CANVAS_PANEL_ID],
+  })
+
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE])
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
@@ -360,16 +371,24 @@ export function ChatInterface() {
   const canSend = input.trim() && !isLoading && !hasActiveStructuredInput
 
   return (
-    <div className="flex h-full min-h-0" style={{ padding: 0 }}>
+    <ResizablePanelGroup
+      orientation="horizontal"
+      className="h-full min-h-0"
+      defaultLayout={defaultLayout ?? { [CHAT_PANEL_ID]: 60, [CANVAS_PANEL_ID]: 40 }}
+      onLayoutChanged={onLayoutChanged}
+    >
       {/* ── Left: Chat Pane ──────────────────────────────────────────── */}
-      <div
-        className="flex flex-col min-w-0 h-full"
-        style={{
-          width: '60%',
-          background: 'var(--color-bg-base)',
-          borderRight: '1px solid var(--color-border)',
-        }}
+      <ResizablePanel
+        id={CHAT_PANEL_ID}
+        defaultSize={60}
+        minSize={25}
       >
+        <div
+          className="flex flex-col min-w-0 h-full"
+          style={{
+            background: 'var(--color-bg-base)',
+          }}
+        >
         {/* Chat header */}
         <div
           style={{
@@ -666,16 +685,26 @@ export function ChatInterface() {
             </button>
           </div>
         </div>
-      </div>
+        </div>
+      </ResizablePanel>
+
+      <ResizableHandle
+        withHandle
+        className="bg-transparent border-white/10 hover:border-[#4F8EF7] transition-colors"
+      />
 
       {/* ── Right: Canvas Pane ───────────────────────────────────────── */}
-      <div
-        className="flex flex-col min-w-0 h-full canvas-dot-grid"
-        style={{
-          width: '40%',
-          background: 'var(--color-bg-base)',
-        }}
+      <ResizablePanel
+        id={CANVAS_PANEL_ID}
+        defaultSize={40}
+        minSize={30}
       >
+        <div
+          className="flex flex-col min-w-0 h-full canvas-dot-grid"
+          style={{
+            background: 'var(--color-bg-base)',
+          }}
+        >
         {/* Canvas header */}
         <div
           style={{
@@ -728,7 +757,8 @@ export function ChatInterface() {
             profileCompleteness={profileCompleteness}
           />
         </div>
-      </div>
-    </div>
+        </div>
+      </ResizablePanel>
+    </ResizablePanelGroup>
   )
 }

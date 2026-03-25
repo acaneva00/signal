@@ -14,10 +14,173 @@ function formatCurrency(value: number): string {
 
 export function StructuredInput({ inputRequest, onSelect }: StructuredInputProps) {
   if (inputRequest.type === 'numeric') return <NumericCard inputRequest={inputRequest} onSelect={onSelect} />
+  if (inputRequest.type === 'date') return <DateCard inputRequest={inputRequest} onSelect={onSelect} />
   if (inputRequest.type === 'chips') return <ChipSelector inputRequest={inputRequest} onSelect={onSelect} />
   if (inputRequest.type === 'segmented') return <SegmentedControl inputRequest={inputRequest} onSelect={onSelect} />
   if (inputRequest.type === 'text') return <TextInput inputRequest={inputRequest} onSelect={onSelect} />
   return null
+}
+
+/* ── Pattern 0: Date Card (dd/mm/yyyy) ────────────────────────────────────── */
+
+function formatDateInput(digits: string): string {
+  const d = digits.replace(/\D/g, '').slice(0, 8)
+  if (d.length <= 2) return d
+  if (d.length <= 4) return `${d.slice(0, 2)}/${d.slice(2)}`
+  return `${d.slice(0, 2)}/${d.slice(2, 4)}/${d.slice(4)}`
+}
+
+function parseDdmmyyyy(input: string): { day: number; month: number; year: number } | null {
+  const parts = input.split(/[\/\-\.]/).map((p) => parseInt(p.trim(), 10))
+  if (parts.length !== 3) return null
+  const [d, m, y] = parts
+  if (isNaN(d) || isNaN(m) || isNaN(y)) return null
+  return { day: d, month: m, year: y }
+}
+
+function ddmmyyyyToIso(day: number, month: number, year: number): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${year}-${pad(month)}-${pad(day)}`
+}
+
+function isValidDate(day: number, month: number, year: number): boolean {
+  if (month < 1 || month > 12) return false
+  if (year < 1930 || year > 2010) return false
+  const daysInMonth = new Date(year, month, 0).getDate()
+  return day >= 1 && day <= daysInMonth
+}
+
+function DateCard({ inputRequest, onSelect }: StructuredInputProps) {
+  const { field, label, placeholder } = inputRequest
+  const [raw, setRaw] = useState('')
+  const [isExiting, setIsExiting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const confirmedRef = useRef(false)
+
+  useEffect(() => {
+    const t = setTimeout(() => inputRef.current?.focus(), 100)
+    return () => clearTimeout(t)
+  }, [])
+
+  const parsed = parseDdmmyyyy(raw)
+  const isValid = parsed !== null && isValidDate(parsed.day, parsed.month, parsed.year)
+  const isoValue = parsed && isValid ? ddmmyyyyToIso(parsed.day, parsed.month, parsed.year) : null
+
+  const doConfirm = useCallback(() => {
+    if (confirmedRef.current || !isoValue) return
+    confirmedRef.current = true
+    setIsExiting(true)
+    const display = raw.trim()
+    setTimeout(() => {
+      onSelect(display, { field, value: isoValue, source: 'structured_input', confidence: 1.0 })
+    }, 150)
+  }, [field, isoValue, raw, onSelect])
+
+  const handleConfirm = () => {
+    if (!parsed) {
+      setError('Enter date as dd/mm/yyyy')
+      return
+    }
+    if (!isValidDate(parsed.day, parsed.month, parsed.year)) {
+      setError('Invalid date. Check day (1–31), month (1–12), year (1930–2010)')
+      return
+    }
+    setError(null)
+    doConfirm()
+  }
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const formatted = formatDateInput(e.target.value)
+    setRaw(formatted)
+    setError(null)
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      handleConfirm()
+    }
+  }
+
+  return (
+    <div style={{
+      opacity: isExiting ? 0 : 1,
+      transform: isExiting ? 'translateY(4px)' : 'translateY(0)',
+      transition: 'opacity 150ms ease, transform 150ms ease',
+    }}>
+      <div className="animate-numeric-card-in" style={{
+        background: 'var(--color-bg-surface)',
+        border: '1px solid var(--color-border-strong)',
+        borderRadius: 16,
+        padding: 16,
+        maxWidth: 400,
+        boxShadow: 'var(--shadow-card)',
+      }}>
+        <div style={{
+          fontSize: 10,
+          fontWeight: 600,
+          textTransform: 'uppercase',
+          letterSpacing: '0.08em',
+          color: 'var(--color-text-muted)',
+          marginBottom: 8,
+        }}>
+          {label || field.replace(/_/g, ' ')}
+        </div>
+        <input
+          ref={inputRef}
+          type="text"
+          inputMode="numeric"
+          value={raw}
+          onChange={handleChange}
+          onKeyDown={handleKeyDown}
+          placeholder={placeholder || 'dd/mm/yyyy'}
+          autoComplete="off"
+          style={{
+            width: '100%',
+            fontSize: 32,
+            fontWeight: 700,
+            fontFamily: 'Inter, system-ui, sans-serif',
+            fontVariantNumeric: 'tabular-nums',
+            color: 'var(--color-text-primary)',
+            background: 'transparent',
+            border: 'none',
+            outline: 'none',
+            padding: 0,
+          }}
+        />
+        {error && (
+          <div style={{ fontSize: 11, color: 'var(--color-accent-danger)', marginTop: 4 }}>{error}</div>
+        )}
+        <div style={{
+          display: 'flex',
+          justifyContent: 'flex-end',
+          marginTop: 12,
+        }}>
+          <button
+            type="button"
+            onClick={handleConfirm}
+            disabled={!isValid}
+            style={{
+              height: 34,
+              padding: '0 16px',
+              background: isValid ? 'var(--color-accent-primary)' : 'var(--color-bg-elevated)',
+              color: isValid ? 'white' : 'var(--color-text-muted)',
+              fontSize: 12,
+              fontWeight: 600,
+              fontFamily: 'Inter, system-ui, sans-serif',
+              border: 'none',
+              borderRadius: 10,
+              cursor: isValid ? 'pointer' : 'default',
+              transition: 'all 150ms ease',
+            }}
+          >
+            Confirm →
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 /* ── Pattern 1: Numeric Card ─────────────────────────────────────────────── */

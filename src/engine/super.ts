@@ -110,6 +110,10 @@ export interface SuperMonthParams {
   catchUpState?: CatchUpState;
   bringForwardState?: BringForwardState;
   downsizer?: DownsizerEvent;
+  /** Retirement month (1–12) for ABP minimum prorating in first year */
+  retirementMonth?: number;
+  /** Retirement year for ABP minimum prorating in first year */
+  retirementYear?: number;
 }
 
 export interface SuperMonthOutput {
@@ -400,7 +404,30 @@ export function calculateSuperMonth(params: SuperMonthParams): SuperMonthOutput 
     const annualRate = fund.pension_drawdown_rate !== null
       ? Math.max(fund.pension_drawdown_rate, minRate)
       : minRate;
-    result.pensionDrawdown = Math.min((balance * annualRate) / 12, balance);
+    let monthlyDrawdown: number;
+    const { retirementMonth, retirementYear } = params;
+    const firstRetMonth = retirementMonth != null && retirementYear != null
+      ? (retirementMonth === 12 ? 1 : retirementMonth + 1)
+      : null;
+    const firstRetYear = retirementMonth != null && retirementYear != null
+      ? (retirementMonth === 12 ? retirementYear + 1 : retirementYear)
+      : null;
+    const firstPensionFY = firstRetMonth != null && firstRetYear != null
+      ? getFinancialYear(firstRetYear, firstRetMonth)
+      : null;
+    const isFirstPensionYear = firstPensionFY != null && fy === firstPensionFY;
+    const pensionStartBalance = fund.pension_start_balance ?? null;
+    if (isFirstPensionYear && pensionStartBalance != null && pensionStartBalance > 0) {
+      const monthsInPension = firstRetMonth != null
+        ? (firstRetMonth <= 6 ? 7 - firstRetMonth : (12 - firstRetMonth + 1) + 6)
+        : 12;
+      const proratedAnnualRate = annualRate * (monthsInPension / 12);
+      monthlyDrawdown = (pensionStartBalance * proratedAnnualRate) / monthsInPension;
+    } else {
+      const openingBalance = fund.fy_opening_balance ?? balance;
+      monthlyDrawdown = (openingBalance * annualRate) / 12;
+    }
+    result.pensionDrawdown = Math.min(monthlyDrawdown, balance);
     balance -= result.pensionDrawdown;
   } else if (phase === 'transition' && balance > 0) {
     const minRate = getMinimumDrawdownRate(age);

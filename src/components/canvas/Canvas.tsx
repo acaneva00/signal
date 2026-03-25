@@ -4,6 +4,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import type { ProjectionSummary, ComparisonResult, FeeBreakdownComparison } from '@/types/agent'
 import { ProjectionLineChart } from './ProjectionLineChart'
 import { ProjectionSummaryCard } from './ProjectionSummaryCard'
+import { RetirementLongevityCanvas } from './RetirementLongevityCanvas'
 import { ScenarioComparisonChart } from './ScenarioComparisonChart'
 import { FeeImpactBarChart } from './FeeImpactBarChart'
 import { FeeBreakdownChart } from './FeeBreakdownChart'
@@ -46,6 +47,7 @@ export function Canvas({
   const showCashFlow = hasProjection && canvasFlags.showCashFlow
   const showBalanceSheet = hasProjection && canvasFlags.showBalanceSheet
   const showForecastTable = hasProjection && projectionSummary!.yearly_detail.length > 0
+  const useRetirementCanvas = intent === 'super_longevity'
 
   return (
     <div className="flex flex-col h-full">
@@ -72,7 +74,17 @@ export function Canvas({
               <FeeProjectionTable projections={feeBreakdownComparison!.yearly_fee_projections} />
             )}
 
-            {hasProjection && !hasComparison && (
+            {hasProjection && !hasComparison && useRetirementCanvas && (
+              <RetirementLongevityCanvas
+                trajectory={projectionSummary!.trajectory}
+                depletionAge={projectionSummary!.depletion_age}
+                summary={projectionSummary!}
+                assumptions={assumptions}
+                intent={intent}
+              />
+            )}
+
+            {hasProjection && !hasComparison && !useRetirementCanvas && (
               <>
                 <div>
                   <h3 style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 8 }}>

@@ -74,6 +74,24 @@ export async function POST(request: Request) {
     if (structured_response && role === 'user') {
       const { field, value } = structured_response as StructuredResponse
 
+      // Normalise date fields to ISO YYYY-MM-DD for storage
+      let storedValue = value
+      if (
+        (field === 'date_of_birth' || field === 'partner_date_of_birth') &&
+        typeof value === 'string'
+      ) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+          const parts = value.split(/[\/\-\.]/).map((p) => p.trim())
+          if (parts.length === 3) {
+            const [d, m, y] = parts.map((p) => parseInt(p, 10))
+            if (!isNaN(d) && !isNaN(m) && !isNaN(y)) {
+              const pad = (n: number) => String(n).padStart(2, '0')
+              storedValue = `${y}-${pad(m)}-${pad(d)}`
+            }
+          }
+        }
+      }
+
       // Get or create financial profile
       let { data: profiles, error: profileError } = await supabase
         .from('financial_profiles')
@@ -95,7 +113,7 @@ export async function POST(request: Request) {
           .from('financial_profiles')
           .insert({
             user_id: user.id,
-            profile_data: { [field]: value },
+            profile_data: { [field]: storedValue },
             self_assessments: {},
             engaged_domains: {},
             fact_find_data: {},
@@ -112,7 +130,7 @@ export async function POST(request: Request) {
         const currentProfileData = profiles.profile_data || {}
         const updatedProfileData = {
           ...currentProfileData,
-          [field]: value,
+          [field]: storedValue,
         }
 
         const { error: updateProfileError } = await supabase

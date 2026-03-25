@@ -288,6 +288,7 @@ describe('minimum drawdown rates by age', () => {
     ({ age, expectedRate }) => {
       const fund = makeFund({
         balance: 1_000_000,
+        fy_opening_balance: 1_000_000,
         phase: 'pension',
         pension_drawdown_rate: null,
         admin_fee_flat: 0,
@@ -313,6 +314,7 @@ describe('minimum drawdown rates by age', () => {
   it('uses specified rate when higher than minimum', () => {
     const fund = makeFund({
       balance: 1_000_000,
+      fy_opening_balance: 1_000_000,
       phase: 'pension',
       pension_drawdown_rate: 0.08,
       admin_fee_flat: 0,
@@ -335,6 +337,7 @@ describe('minimum drawdown rates by age', () => {
   it('overrides specified rate with minimum when specified is lower', () => {
     const fund = makeFund({
       balance: 1_000_000,
+      fy_opening_balance: 1_000_000,
       phase: 'pension',
       pension_drawdown_rate: 0.02,
       admin_fee_flat: 0,
@@ -351,6 +354,61 @@ describe('minimum drawdown rates by age', () => {
       fyStartBalance: 1_000_000,
     }));
 
+    expect(result.pensionDrawdown).toBeCloseTo(1_000_000 * 0.05 / 12, 2);
+  });
+
+  it('prorates ABP minimum in first year when pension starts in October', () => {
+    const fund = makeFund({
+      balance: 510_000,
+      phase: 'pension',
+      pension_drawdown_rate: null,
+      pension_start_balance: 500_000,
+      admin_fee_flat: 0,
+      admin_fee_percent: 0,
+      insurance_premium: 0,
+      investment_return: 0,
+      retirement_investment_return: 0,
+    });
+
+    const { result } = calculateSuperMonth(makeBaseParams({
+      fund,
+      age: 64,
+      year: 2025,
+      month: 10,
+      isRetired: true,
+      fyStartBalance: 500_000,
+      retirementMonth: 9,
+      retirementYear: 2025,
+    }));
+
+    const fy = getFinancialYear(2025, 10);
+    expect(fy).toBe(2026);
+    const monthsInPension = 9;
+    const proratedRate = 0.04 * (monthsInPension / 12);
+    const expectedMonthly = (500_000 * proratedRate) / monthsInPension;
+    expect(result.pensionDrawdown).toBeCloseTo(expectedMonthly, 2);
+    expect(result.pensionDrawdown).toBeCloseTo(500_000 * 0.04 / 12, 2);
+  });
+
+  it('uses fixed fy_opening_balance for later pension years (ATO rule)', () => {
+    const fund = makeFund({
+      balance: 800_000, // declining over year
+      fy_opening_balance: 1_000_000, // fixed 1 July balance
+      phase: 'pension',
+      pension_drawdown_rate: null,
+      admin_fee_flat: 0,
+      admin_fee_percent: 0,
+      insurance_premium: 0,
+      investment_return: 0,
+      retirement_investment_return: 0,
+    });
+    const { result } = calculateSuperMonth(makeBaseParams({
+      fund,
+      age: 65,
+      isRetired: true,
+      fyStartBalance: 1_000_000,
+    }));
+    // Must use 1M (opening), not 800k (current)
     expect(result.pensionDrawdown).toBeCloseTo(1_000_000 * 0.05 / 12, 2);
   });
 });

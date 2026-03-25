@@ -90,6 +90,10 @@ export async function POST(request: Request) {
     if (structuredResponse) {
       const { field, value } = structuredResponse;
       profileData = { ...profileData, [field]: value };
+      // Mark date fields as user-verified when from DateCard (not agent-inferred)
+      if (field === 'date_of_birth' || field === 'partner_date_of_birth') {
+        profileData = { ...profileData, [`${field}_verified`]: true };
+      }
 
       if (profile) {
         await supabase
@@ -134,7 +138,17 @@ export async function POST(request: Request) {
     });
 
     // ── Run orchestrator ─────────────────────────────────────────────────
-    const result = await runChat(message, profileData, conversationHistory);
+    let result;
+    try {
+      result = await runChat(message, profileData, conversationHistory);
+    } catch (err) {
+      // #region agent log
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const errStack = err instanceof Error ? err.stack : undefined;
+      fetch('http://127.0.0.1:7587/ingest/9194df1b-2a00-4be9-ae88-babf17f415a1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'40eead'},body:JSON.stringify({sessionId:'40eead',location:'chat/route.ts:runChat',message:'runChat threw',data:{error:errMsg,stack:errStack?.slice(0,500)},timestamp:Date.now(),hypothesisId:'ERROR'})}).catch(()=>{});
+      // #endregion
+      throw err;
+    }
 
     // ── Persist profile updates from overrides (e.g. target_age → intended_retirement_age)
     if (Object.keys(result.profile_updates).length > 0) {

@@ -67,7 +67,7 @@ export interface CanvasState {
 }
 
 export interface InputRequest {
-  type: 'numeric' | 'chips' | 'segmented' | 'text'
+  type: 'numeric' | 'chips' | 'segmented' | 'text' | 'date'
   field: string
   required: boolean
   label?: string
@@ -75,6 +75,7 @@ export interface InputRequest {
   placeholder?: string
   options?: Array<{ label: string; value: string }>
   format?: 'currency' | 'year' | 'age' | 'number'
+  dateFormat?: 'dd/mm/yyyy'
   min?: number
   max?: number
   autocomplete?: boolean

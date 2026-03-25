@@ -26,6 +26,15 @@ export const COLORS = {
   scenarioA: '#4F8EF7',
   scenarioB: '#FBBF24',
   grid: 'rgba(255,255,255,0.06)',
+  // Retirement Longevity Canvas
+  super: '#4F7EF7',
+  agePension: '#7B68EE',
+  nonSuperAsset: '#10B981',
+  nonSuperDrawdownCash: '#F59E0B',
+  nonSuperDrawdownSale: '#EF4444',
+  additionalABP: '#60A5FA',
+  shortfall: '#FCA5A5',
+  gridDark: '#1E2130',
   waterfall: {
     income: '#34D399',
     deduction: '#F87171',

@@ -111,6 +111,7 @@ const TOOLS: Anthropic.Tool[] = [
             extra_mortgage_payment: { type: 'number' },
             super_fees_flat: { type: 'number' },
             super_fees_percent: { type: 'number' },
+            lump_sum_withdrawal: { type: 'number', description: 'One-off lump sum withdrawal from super (e.g. at retirement)' },
           },
         },
         extracted_profile_data: {
@@ -121,7 +122,7 @@ const TOOLS: Anthropic.Tool[] = [
             'to the user\'s profile automatically and will satisfy missing-field checks. ' +
             'ALWAYS include ALL profile values mentioned so far in the conversation.',
           properties: {
-            date_of_birth_year: { type: 'number', description: 'Year of birth (e.g. 1985)' },
+            date_of_birth: { type: 'string', description: 'Date of birth dd/mm/yyyy (e.g. 15/03/1985)' },
             income: { type: 'number', description: 'Annual gross salary in dollars' },
             super_balance: { type: 'number', description: 'Current superannuation balance' },
             super_fund_name: { type: 'string', description: "User's current super fund name (e.g. AustralianSuper, Hostplus)" },
@@ -155,7 +156,7 @@ const TOOLS: Anthropic.Tool[] = [
               enum: ['balanced', 'aggressive_debt', 'super_boost', 'investment_focused'],
               description: 'How surplus cash flow should be allocated in full_model projections',
             },
-            partner_date_of_birth_year: { type: 'number', description: "Partner's year of birth" },
+            partner_date_of_birth: { type: 'string', description: "Partner's date of birth dd/mm/yyyy" },
             partner_income: { type: 'number', description: "Partner's annual gross salary" },
             partner_super_balance: { type: 'number', description: "Partner's super balance" },
             partner_super_fund_name: { type: 'string', description: "Partner's super fund name" },
@@ -207,6 +208,7 @@ const TOOLS: Anthropic.Tool[] = [
             extra_mortgage_payment: { type: 'number' },
             super_fees_flat: { type: 'number' },
             super_fees_percent: { type: 'number' },
+            lump_sum_withdrawal: { type: 'number', description: 'One-off lump sum withdrawal from super (e.g. at retirement)' },
           },
         },
         extracted_profile_data: {
@@ -215,7 +217,7 @@ const TOOLS: Anthropic.Tool[] = [
             'Personal profile values from the conversation to save before running ' +
             'the projection. Same schema as in get_required_fields.',
           properties: {
-            date_of_birth_year: { type: 'number' },
+            date_of_birth: { type: 'string' },
             income: { type: 'number' },
             super_balance: { type: 'number' },
             super_fund_name: { type: 'string' },
@@ -243,7 +245,7 @@ const TOOLS: Anthropic.Tool[] = [
               type: 'string',
               enum: ['balanced', 'aggressive_debt', 'super_boost', 'investment_focused'],
             },
-            partner_date_of_birth_year: { type: 'number' },
+            partner_date_of_birth: { type: 'string' },
             partner_income: { type: 'number' },
             partner_super_balance: { type: 'number' },
             partner_super_fund_name: { type: 'string' },
@@ -328,10 +330,22 @@ const TOOLS: Anthropic.Tool[] = [
 // All field definitions (widget specs + data types) live in field-registry.ts.
 // FIELD_INPUT_REQUESTS and EXTRACTABLE_PROFILE_FIELDS are imported above.
 
+/** Parse dd/mm/yyyy or dd-mm-yyyy to ISO YYYY-MM-DD. Already-ISO strings pass through. */
+function normalizeToIsoDate(input: string): string {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(input)) return input;
+  const parts = input.split(/[\/\-\.]/).map((p) => p.trim());
+  if (parts.length !== 3) return input;
+  const [d, m, y] = parts.map((p) => parseInt(p, 10));
+  if (isNaN(d) || isNaN(m) || isNaN(y)) return input;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${y}-${pad(m)}-${pad(d)}`;
+}
+
 /**
  * Validate and merge extracted profile data into the tool context.
  * Values are written to both profileData (for immediate use) and
  * profileUpdates (for persistence to the database after the turn).
+ * Date fields (date_of_birth, partner_date_of_birth) are normalised to ISO YYYY-MM-DD.
  */
 function mergeExtractedProfileData(
   extracted: Record<string, unknown> | undefined,
@@ -344,8 +358,18 @@ function mergeExtractedProfileData(
     const expectedType = EXTRACTABLE_PROFILE_FIELDS[field];
     if (!expectedType || value == null || typeof value !== expectedType) continue;
 
-    ctx.profileData[field] = value;
-    ctx.profileUpdates[field] = value;
+    let finalValue = value;
+    if (
+      (field === 'date_of_birth' || field === 'partner_date_of_birth') &&
+      typeof value === 'string'
+    ) {
+      finalValue = normalizeToIsoDate(value);
+      // Reject if still not valid ISO (e.g. agent passed "40" or "1985" from "I am 40")
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(finalValue as string)) continue;
+    }
+
+    ctx.profileData[field] = finalValue;
+    ctx.profileUpdates[field] = finalValue;
     saved.push(field);
   }
 
@@ -372,7 +396,7 @@ COMPARE_FUND INTENT:
 When intent is compare_fund:
 1. On EVERY turn, call get_required_fields with intent "compare_fund" and pass ALL extracted_profile_data collected so far. This is mandatory — it saves data to the profile AND returns the input widget for the next missing field. Never skip this call.
 2. If super_fund_name is missing, ask exactly: "Which super fund are you currently with?" and STOP.
-3. If date_of_birth_year is missing, ask for it next. It is needed to select the correct Lifestage cohort for funds that use age-based investment options (e.g. CFS FirstChoice, AMP, ART). STOP after asking.
+3. If date_of_birth is missing, ask for it next. It is needed to select the correct Lifestage cohort for funds that use age-based investment options (e.g. CFS FirstChoice, AMP, ART). STOP after asking.
 4. If super_balance is missing, ask for it next. STOP after asking.
 5. Do NOT call search_products or run any comparison until get_required_fields returns zero missing fields.
 6. Once all required fields are present, call search_products TWICE — once for the user's fund, once for the comparison target (or "the market" if none specified).
@@ -483,7 +507,7 @@ WORKFLOW:
 1. Classify the user's intent
 2. Extract ALL values the user has stated in this conversation. Separate them into two categories:
    a. PROFILE DATA — personal facts about the user. Map to extracted_profile_data keys:
-      • Birth year / age / "born in X" → date_of_birth_year (number, e.g. 1985)
+      • Birth date / "born 15/3/1985" → date_of_birth (string, dd/mm/yyyy). NEVER infer from age (e.g. "I am 40") — only when user states an actual date. If they only give age, do NOT pass date_of_birth; the system will ask for it.
       • Salary / income / "I earn $X" → income (number, e.g. 80000)
       • Super balance / "I have $X in super" → super_balance (number, e.g. 320000)
       • Super fund name / "I'm with X" → super_fund_name (string, e.g. "Hostplus")
@@ -505,6 +529,7 @@ WORKFLOW:
       • Extra super contributions → extra_super_contribution
       • Retirement age for what-if → retirement_age
       • Spending for what-if → annual_expenses
+      • "Take out $50k at retirement" / "lump sum of 50k" → lump_sum_withdrawal (number, e.g. 50000)
 3. For ALL calculation intents: call get_required_fields on EVERY turn before responding. Never ask for a field value without the corresponding tool call — the tool generates the input widget the frontend needs. Pass:
    - extracted_profile_data with ALL profile values from step 2a (saves them to the user's profile)
    - planned_overrides with scenario overrides from step 2b
@@ -513,7 +538,8 @@ WORKFLOW:
 6. Explain results in plain language with assumptions listed
 
 EXTRACTING USER DATA — CRITICAL:
-- Whenever the user states a personal fact (e.g. "I earn $80k", "born in 1985", "$320k in super"), you MUST include it in extracted_profile_data on your NEXT tool call.
+- Whenever the user states a personal fact (e.g. "I earn $80k", "$320k in super"), you MUST include it in extracted_profile_data on your NEXT tool call.
+- For date_of_birth: ONLY extract when the user states an actual date (e.g. "born 15/3/1985", "15 March 1985"). NEVER compute it from age (e.g. "I am 40") — leave it out so the system prompts for the real date.
 - Scan the ENTIRE conversation history for previously stated values — not just the latest message.
 - Extracted values are automatically saved to the user's profile and persist across turns and intents.
 - NEVER re-ask for a value the user has already provided — extract it instead.
@@ -535,7 +561,7 @@ DATA COLLECTION — CRITICAL:
   • HECS/HELP debt → ask balance; otherwise skip
   • Investment property → ask value, rental income, mortgage
 
-When asking for a field, the get_required_fields tool returns an input_request object. The frontend renders an interactive input widget (numeric keypad, chips, etc.) directly below your message. Because the widget already shows labels, hints, and formatting, keep your question to ONE SHORT SENTENCE — e.g. "What year were you born?" not "What year were you born? (e.g. 1985) This helps determine your current age and years until retirement." Do NOT repeat the hint, placeholder, or explain why you need the field — the card handles that.
+When asking for a field, the get_required_fields tool returns an input_request object. The frontend renders an interactive input widget (numeric keypad, chips, etc.) directly below your message. Because the widget already shows labels, hints, and formatting, keep your question to ONE SHORT SENTENCE — e.g. "What's your date of birth?" for date fields, "What's your annual income?" for numeric fields. Do NOT repeat the hint, placeholder, or explain why you need the field — the card handles that.
 If the user has already answered a question via free text in an earlier message, do NOT ask again — pass the value in extracted_profile_data instead.
 
 PROJECTION SCOPE:
@@ -595,6 +621,7 @@ EXPLAINING RESULTS:
 
 NUMBERS — CRITICAL:
 - Every dollar figure you state MUST come directly from the engine's output. NEVER calculate, round, adjust, or derive your own figures.
+- The table, chart, and metrics (depletion age, final super, etc.) all come from the SAME projection run. When the user asks a "what if" (e.g. lump sum withdrawal), the projection has already been run WITH that scenario. Use the numbers from the tool result — they reflect the scenario the user asked about.
 - All engine output is in nominal (future) dollars. Always present numbers in nominal terms and label them as such (e.g. "approximately $1.74 million in nominal terms").
 - If the user asks for values in today's dollars or real terms, tell them the engine currently reports in nominal terms and note that the real purchasing power would be lower after accounting for inflation. Do NOT attempt to calculate the real value yourself.
 - NEVER present two different dollar figures for the same metric. If you state a super balance at retirement, use ONE number — the one from the engine — consistently throughout your entire response.
@@ -701,6 +728,10 @@ async function handleGetRequiredFields(
   const satisfied = getFieldsSatisfiedByOverrides(input.planned_overrides);
   const effectiveMissing = missing.filter((f) => !satisfied.has(f));
 
+  // #region agent log
+  fetch('http://127.0.0.1:7587/ingest/9194df1b-2a00-4be9-ae88-babf17f415a1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'40eead'},body:JSON.stringify({sessionId:'40eead',location:'orchestrator.ts:handleGetRequiredFields',message:'get_required_fields result',data:{intent:input.intent,requiredHasDob:requiredFields.includes('date_of_birth'),missingCount:missing.length,effectiveMissingCount:effectiveMissing.length,dateOfBirthInMissing:missing.includes('date_of_birth'),dateOfBirthInEffectiveMissing:effectiveMissing.includes('date_of_birth'),firstMissing:effectiveMissing[0],profileKeys:Object.keys(ctx.profileData).filter(k=>k.includes('date')||k.includes('birth'))},timestamp:Date.now(),hypothesisId:'H1_H2_H4_H5'})}).catch(()=>{});
+  // #endregion
+
   let inputRequest =
     effectiveMissing.length > 0 ? (FIELD_INPUT_REQUESTS[effectiveMissing[0]] ?? null) : null;
   if (inputRequest && inputRequest.field === 'super_investment_option') {
@@ -777,7 +808,7 @@ async function resolveFundFees(
   };
 
   const balance = (ctx.profileData.super_balance as number | undefined) ?? 50_000;
-  const birthYear = ctx.profileData.date_of_birth_year as number | undefined;
+  const birthYear = resolveProfileField(ctx.profileData, 'date_of_birth_year') as number | undefined;
 
   const isDefault = ctx.profileData.is_default_investment;
   const investmentOption = isDefault === true || isDefault === 'true'
@@ -813,7 +844,7 @@ async function resolvePartnerFundFees(
   };
 
   const balance = (ctx.profileData.partner_super_balance as number | undefined) ?? 50_000;
-  const birthYear = ctx.profileData.partner_date_of_birth_year as number | undefined;
+  const birthYear = resolveProfileField(ctx.profileData, 'partner_date_of_birth_year') as number | undefined;
 
   const isDefault = ctx.profileData.partner_is_default_investment;
   const investmentOption = isDefault === true || isDefault === 'true'
@@ -880,6 +911,10 @@ async function handleRunProjection(
     ...(input.projection_years != null ? { projection_years: input.projection_years } : {}),
     ...(input.target_age != null ? { retirement_age: input.target_age } : {}),
   };
+
+  // #region agent log
+  fetch('http://127.0.0.1:7587/ingest/9194df1b-2a00-4be9-ae88-babf17f415a1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'40eead'},body:JSON.stringify({sessionId:'40eead',location:'orchestrator.ts:handleRunProjection',message:'run_projection overrides',data:{overrides:overrides as Record<string,unknown>,hasLumpSum:!(overrides as Record<string,unknown>).lump_sum_withdrawal==null},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+  // #endregion
 
   const requiredFields = getRequiredVariables(input.intent);
   const { available, missing } = checkFieldAvailability(ctx.profileData, requiredFields);
@@ -985,7 +1020,7 @@ async function handleCompareScenarios(
 
   try {
     const balance = (ctx.profileData.super_balance as number | undefined) ?? 50_000;
-    const birthYear = ctx.profileData.date_of_birth_year as number | undefined;
+    const birthYear = resolveProfileField(ctx.profileData, 'date_of_birth_year') as number | undefined;
 
     // Resolve the user's current growth profile for cross-fund matching
     const userFundName = ctx.profileData.super_fund_name as string | undefined;
@@ -1212,7 +1247,7 @@ async function handleSearchProducts(
   const balance =
     (ctx.profileData.super_balance as number | undefined) ?? 50_000;
   const birthYear =
-    ctx.profileData.date_of_birth_year as number | undefined;
+    resolveProfileField(ctx.profileData, 'date_of_birth_year') as number | undefined;
   const product = await findProduct(input.fund_name);
 
   if (!product) {
@@ -1244,6 +1279,10 @@ async function executeToolCall(
   input: unknown,
   ctx: ToolContext,
 ): Promise<Record<string, unknown>> {
+  // #region agent log
+  const toolInput = input as Record<string, unknown>;
+  fetch('http://127.0.0.1:7587/ingest/9194df1b-2a00-4be9-ae88-babf17f415a1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'40eead'},body:JSON.stringify({sessionId:'40eead',location:'orchestrator.ts:executeToolCall',message:'tool invoked',data:{tool:name,intent:toolInput?.intent},timestamp:Date.now(),hypothesisId:'H4'})}).catch(()=>{});
+  // #endregion
   switch (name) {
     case 'get_required_fields':
       return await handleGetRequiredFields(
@@ -1298,6 +1337,15 @@ function buildAssumptionsList(ctx: ToolContext): string[] {
   } else {
     list.push(
       'Using average industry fees ($78 admin + 0.70% p.a.). Tell us your fund for exact fees.',
+    );
+  }
+
+  if (ctx.classifiedIntent === 'super_longevity') {
+    list.push(
+      'Retirement occurs in the month you turn your retirement age (default: your birth month). You can nominate a different retirement month to override.',
+    );
+    list.push(
+      'Account-based pension commences the month after retirement, subject to meeting regulatory requirements.',
     );
   }
 
@@ -1396,7 +1444,7 @@ export async function runChat(
     const balance =
       (ctx.profileData.super_balance as number | undefined) ?? 50_000;
     const birthYear =
-      ctx.profileData.date_of_birth_year as number | undefined;
+      resolveProfileField(ctx.profileData, 'date_of_birth_year') as number | undefined;
     feeBreakdownComparison = {
       funds: ctx.searchProductResults.map((r) =>
         buildFeeBreakdown(r.product, balance, birthYear),
@@ -1442,7 +1490,13 @@ export async function runChat(
               'Consider speaking to a licensed financial adviser for personal advice.',
           ]
         : [],
-    input_request: hasProjection || hasComparison ? null : ctx.lastInputRequest,
+    input_request: (() => {
+      const ir = hasProjection || hasComparison ? null : ctx.lastInputRequest;
+      // #region agent log
+      fetch('http://127.0.0.1:7587/ingest/9194df1b-2a00-4be9-ae88-babf17f415a1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'40eead'},body:JSON.stringify({sessionId:'40eead',location:'orchestrator.ts:buildChatResult',message:'final result input_request',data:{hasProjection,hasComparison,inputRequestField:ir?.field,intent:ctx.classifiedIntent},timestamp:Date.now(),hypothesisId:'H5'})}).catch(()=>{});
+      // #endregion
+      return ir;
+    })(),
     profile_updates: ctx.profileUpdates,
   };
 }

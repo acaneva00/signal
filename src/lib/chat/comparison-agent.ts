@@ -6,7 +6,8 @@ import type { InputRequest } from '@/types/agent';
 interface ComparisonProfile {
   super_fund_name?: string;
   super_balance?: number;
-  date_of_birth_year?: number;
+  date_of_birth?: string;
+  date_of_birth_year?: number; // legacy, derived from date_of_birth when present
   [key: string]: unknown;
 }
 
@@ -56,7 +57,9 @@ export async function buildComparisonResponse(
   }
 
   const balance = (profile.super_balance as number) ?? DEFAULT_BALANCE;
-  const birthYear = profile.date_of_birth_year;
+  const birthYear = profile.date_of_birth
+    ? parseInt(String(profile.date_of_birth).slice(0, 4), 10)
+    : (profile.date_of_birth_year as number | undefined);
 
   const userFund = await findProduct(profile.super_fund_name);
   const targetName = extractComparisonTarget(message);

@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import { ScenarioSchema, type ProjectionResult } from './models';
 import { project } from './engine';
+import { getFinancialYear } from './super';
 import { getRequiredFields } from '@/lib/intents';
 import { CONTRIBUTIONS_TAX_RATE } from './rates/super-fy2025';
 
@@ -22,6 +23,37 @@ export interface TrajectoryPoint {
   total_assets: number;
   total_liabilities: number;
   age_pension_annual: number;
+  /** Annual super drawdown; zero in accumulation. */
+  super_drawdown_annual?: number;
+  /** Minimum ABP only (unavoidable income). */
+  super_drawdown_min_annual?: number;
+  /** Additional ABP used to fund shortfall. */
+  super_drawdown_additional_annual?: number;
+  /** total_assets - super_balance; zero if super-only. */
+  non_super_asset_total?: number;
+  /** Dividends, rent, interest. Zero if super-only. */
+  non_super_income_annual?: number;
+  /** Drawdown from cash/liquid assets. Zero if super-only. */
+  non_super_drawdown_cash_annual?: number;
+  /** Drawdown from asset disposal (CGT). Zero if super-only. */
+  non_super_drawdown_sale_annual?: number;
+  /** Employment income for the FY (net of tax); non-zero in first retirement year (July–Dec). */
+  employment_income_annual?: number;
+  /** age >= retirement_age. */
+  is_retirement_year?: boolean;
+  /** Target annual spending from scenario (same for all points). */
+  retirement_spending_target?: number;
+  /** Gross shortfall for the FY (engine only; never rendered in chart). */
+  gross_shortfall_annual?: number;
+  /** EOFY tax refund (negative tax); adds to available funds. */
+  tax_refund_annual?: number;
+  /** Secondary funding by source (for chart tooltip breakdown). */
+  secondary_cash_annual?: number;
+  secondary_fixed_interest_annual?: number;
+  secondary_super_annual?: number;
+  secondary_shares_annual?: number;
+  secondary_property_annual?: number;
+  lump_sum_annual?: number;
 }
 
 export interface YearlyDetail {
@@ -58,6 +90,8 @@ export interface ProjectionSummary {
   final_super: number;
   final_net_worth: number;
   depletion_age: number | null;
+  retirement_age: number | null;
+  retirement_spending_target: number | null;
   total_pension: number;
   years_in_deficit: number;
   opening_position: {
@@ -196,6 +230,14 @@ export function createSummary(result: ProjectionResult): ProjectionSummary {
 
   const depletionAge = findDepletionAge(result);
 
+  const metadata = result.metadata as Record<string, unknown>;
+  const retirementAge =
+    typeof metadata?.retirement_age === 'number' ? metadata.retirement_age : null;
+  const retirementSpendingTarget =
+    typeof metadata?.retirement_spending_target === 'number'
+      ? metadata.retirement_spending_target
+      : null;
+
   const milestones = findMilestones(result);
 
   const legacyTrajectory: ProjectionSummary['net_worth_trajectory'] = [];
@@ -213,6 +255,8 @@ export function createSummary(result: ProjectionResult): ProjectionSummary {
     final_super: last.total_super,
     final_net_worth: last.net_worth,
     depletion_age: depletionAge,
+    retirement_age: retirementAge,
+    retirement_spending_target: retirementSpendingTarget,
     total_pension: totalPension,
     years_in_deficit: Math.round(deficitMonths / 12),
     opening_position: {
@@ -304,6 +348,8 @@ function emptySummary(result: ProjectionResult): ProjectionSummary {
     final_super: 0,
     final_net_worth: 0,
     depletion_age: null,
+    retirement_age: null,
+    retirement_spending_target: null,
     total_pension: 0,
     years_in_deficit: 0,
     opening_position: { net_worth: 0, total_assets: 0, total_super: 0, total_liabilities: 0 },
@@ -323,48 +369,141 @@ function buildTrajectory(result: ProjectionResult): TrajectoryPoint[] {
   const points: TrajectoryPoint[] = [];
   const snaps = result.snapshots;
 
-  for (let i = 0; i < snaps.length; i += 12) {
-    const s = snaps[i];
+  const metadata = result.metadata as Record<string, unknown>;
+  const retirementAge =
+    typeof metadata?.retirement_age === 'number' ? metadata.retirement_age : 67;
+  const projectionScope = metadata?.projection_scope as string | undefined;
+  const retirementSpendingTarget =
+    typeof metadata?.retirement_spending_target === 'number'
+      ? metadata.retirement_spending_target
+      : 0;
+
+  const fyMetadataByYear = (metadata?.fy_metadata_by_year ?? []) as Array<{
+    fy: number;
+    fyGrossShortfall: number;
+    fySecondaryCash: number;
+    fySecondaryFixedInterest: number;
+    fySecondarySuper: number;
+    fySecondaryShares: number;
+    fySecondaryProperty: number;
+    fyLumpSum: number;
+  }>;
+  const fyMetaByFy = new Map(fyMetadataByYear.map((m) => [m.fy, m]));
+
+  function pushPoint(
+    s: (typeof snaps)[0],
+    startIdx: number,
+    endIdx: number,
+  ): void {
     const person = s.persons[0];
+    const age = person?.age ?? 0;
 
     let pensionAnnual = 0;
-    const start = Math.max(0, i - 11);
-    for (let j = start; j <= i; j++) {
-      pensionAnnual += snaps[j].age_pension_monthly;
+    let superDrawdownAnnual = 0;
+    let employmentIncomeGrossAnnual = 0;
+    let totalTaxAnnual = 0;
+    let totalGrossIncomeAnnual = 0;
+    for (let j = startIdx; j <= endIdx && j < snaps.length; j++) {
+      const snap = snaps[j];
+      pensionAnnual += snap.age_pension_monthly;
+      superDrawdownAnnual += snap.total_super_pension_income;
+      employmentIncomeGrossAnnual += snap.total_employment_income;
+      totalTaxAnnual += snap.total_tax;
+      totalGrossIncomeAnnual += snap.total_gross_income;
     }
+
+    const nonSuperAssetTotal = Math.max(
+      0,
+      s.total_assets - s.total_super,
+    );
+
+    let nonSuperIncomeAnnual = 0;
+    let nonSuperDrawdownCashAnnual = 0;
+    let nonSuperDrawdownSaleAnnual = 0;
+    let superDrawdownAdditionalAnnual = 0;
+    for (let j = startIdx; j <= endIdx && j < snaps.length; j++) {
+      const snap = snaps[j] as {
+        total_asset_income?: number;
+        drawdown_cash_this_month?: number;
+        drawdown_sale_this_month?: number;
+        drawdown_super_additional_this_month?: number;
+      };
+      nonSuperIncomeAnnual += snap.total_asset_income ?? 0;
+      nonSuperDrawdownCashAnnual += snap.drawdown_cash_this_month ?? 0;
+      nonSuperDrawdownSaleAnnual += snap.drawdown_sale_this_month ?? 0;
+      superDrawdownAdditionalAnnual += snap.drawdown_super_additional_this_month ?? 0;
+    }
+
+    const superDrawdownMinAnnual = Math.max(
+      0,
+      superDrawdownAnnual - superDrawdownAdditionalAnnual,
+    );
+
+    // Effective tax rate method: tax on total taxable income, then net each component.
+    // totalTaxableGross excludes super pension (tax-free 60+). taxShare applies proportional
+    // tax so age_pension_annual and non_super_income_annual are net-of-tax; chart segments
+    // sum to target spending.
+
+    const totalTaxableGross = Math.max(
+      0.01,
+      totalGrossIncomeAnnual - superDrawdownAnnual,
+    );
+    const taxShare = (gross: number) =>
+      totalTaxableGross > 0
+        ? Math.max(0, gross - totalTaxAnnual * (gross / totalTaxableGross))
+        : gross;
+
+    const employmentIncomeAnnual = taxShare(employmentIncomeGrossAnnual);
+    const agePensionAnnualNet = taxShare(pensionAnnual);
+    const nonSuperIncomeAnnualNet = taxShare(nonSuperIncomeAnnual);
+    const taxRefundAnnual = Math.max(0, -totalTaxAnnual);
+
+    let retirementSpendingTargetForPoint = retirementSpendingTarget;
+    if (age >= retirementAge) {
+      retirementSpendingTargetForPoint = 0;
+      for (let j = startIdx; j <= endIdx && j < snaps.length; j++) {
+        retirementSpendingTargetForPoint += snaps[j].total_expenses;
+      }
+    }
+
+    const fy = getFinancialYear(s.year, s.month);
+    const fyMeta = fyMetaByFy.get(fy);
 
     points.push({
       year: s.year,
       month: s.month,
-      age: person?.age ?? 0,
+      age,
       net_worth: s.net_worth,
       super_balance: s.total_super,
       total_assets: s.total_assets,
       total_liabilities: s.total_liabilities,
-      age_pension_annual: pensionAnnual,
+      age_pension_annual: agePensionAnnualNet,
+      super_drawdown_annual: superDrawdownAnnual,
+      super_drawdown_min_annual: superDrawdownMinAnnual,
+      super_drawdown_additional_annual: superDrawdownAdditionalAnnual,
+      non_super_asset_total: nonSuperAssetTotal,
+      non_super_income_annual: nonSuperIncomeAnnualNet,
+      non_super_drawdown_cash_annual: nonSuperDrawdownCashAnnual,
+      non_super_drawdown_sale_annual: nonSuperDrawdownSaleAnnual,
+      employment_income_annual: projectionScope === 'super_only' ? 0 : employmentIncomeAnnual,
+      is_retirement_year: age >= retirementAge,
+      retirement_spending_target: retirementSpendingTargetForPoint,
+      gross_shortfall_annual: fyMeta?.fyGrossShortfall,
+      secondary_cash_annual: fyMeta?.fySecondaryCash,
+      secondary_fixed_interest_annual: fyMeta?.fySecondaryFixedInterest,
+      secondary_super_annual: fyMeta?.fySecondarySuper,
+      secondary_shares_annual: fyMeta?.fySecondaryShares,
+      secondary_property_annual: fyMeta?.fySecondaryProperty,
+      lump_sum_annual: fyMeta?.fyLumpSum,
+      tax_refund_annual: taxRefundAnnual,
     });
   }
 
-  if (snaps.length > 1) {
-    const last = snaps[snaps.length - 1];
-    const prev = points[points.length - 1];
-    if (!prev || prev.year !== last.year || prev.month !== last.month) {
-      const start = Math.max(0, snaps.length - 12);
-      let pensionAnnual = 0;
-      for (let j = start; j < snaps.length; j++) {
-        pensionAnnual += snaps[j].age_pension_monthly;
-      }
-      points.push({
-        year: last.year,
-        month: last.month,
-        age: last.persons[0]?.age ?? 0,
-        net_worth: last.net_worth,
-        super_balance: last.total_super,
-        total_assets: last.total_assets,
-        total_liabilities: last.total_liabilities,
-        age_pension_annual: pensionAnnual,
-      });
-    }
+  // FY-aligned windows (July–June), same as buildYearlyDetail
+  for (let fyStart = 0; fyStart < snaps.length; fyStart += 12) {
+    const fyEnd = Math.min(fyStart + 12, snaps.length);
+    const lastSnap = snaps[fyEnd - 1];
+    pushPoint(lastSnap, fyStart, fyEnd - 1);
   }
 
   return points;
@@ -374,6 +513,10 @@ function buildYearlyDetail(result: ProjectionResult): YearlyDetail[] {
   const details: YearlyDetail[] = [];
   const snaps = result.snapshots;
   const netContributionRate = 1 - CONTRIBUTIONS_TAX_RATE;
+  const metadata = result.metadata as Record<string, unknown>;
+  const retirementAge =
+    typeof metadata?.retirement_age === 'number' ? metadata.retirement_age : 67;
+  const projectionScope = metadata?.projection_scope as string | undefined;
 
   for (let fyStart = 0; fyStart < snaps.length; fyStart += 12) {
     const fyEnd = Math.min(fyStart + 12, snaps.length);
@@ -397,10 +540,12 @@ function buildYearlyDetail(result: ProjectionResult): YearlyDetail[] {
     let investmentReturn = 0;
     let fees = 0;
     let pensionDrawdown = 0;
+    let lumpSumWithdrawals = 0;
 
     for (let i = fyStart; i < fyEnd; i++) {
       const s = snaps[i];
       grossIncome += s.total_gross_income;
+      lumpSumWithdrawals += s.lump_sum_withdrawals_this_month ?? 0;
       employmentIncome += s.total_employment_income;
       superPensionIncome += s.total_super_pension_income;
       agePension += s.age_pension_monthly;
@@ -427,11 +572,18 @@ function buildYearlyDetail(result: ProjectionResult): YearlyDetail[] {
       ? snaps[fyStart - 1].total_super
       : firstMonth.total_super;
 
+    const age = person?.age ?? 0;
+    const effectiveEmploymentIncome =
+      projectionScope === 'super_only' && age >= retirementAge ? 0 : employmentIncome;
+
+    // #region agent log
+    fetch('http://127.0.0.1:7587/ingest/9194df1b-2a00-4be9-ae88-babf17f415a1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'40eead'},body:JSON.stringify({sessionId:'40eead',location:'api.ts:buildYearlyDetail',message:'lump_sum_withdrawals per FY',data:{fy:lastMonth.year,age:person?.age,lump_sum_withdrawals:lumpSumWithdrawals},timestamp:Date.now(),hypothesisId:'H4',runId:'post-fix'})}).catch(()=>{});
+    // #endregion
     details.push({
       financial_year: lastMonth.year,
-      age: person?.age ?? 0,
+      age,
       gross_income: grossIncome,
-      employment_income: employmentIncome,
+      employment_income: effectiveEmploymentIncome,
       super_pension_income: superPensionIncome,
       age_pension: agePension,
       asset_income: assetIncome,
@@ -452,7 +604,7 @@ function buildYearlyDetail(result: ProjectionResult): YearlyDetail[] {
       investment_return: investmentReturn,
       fees,
       pension_drawdown: pensionDrawdown,
-      lump_sum_withdrawals: null,
+      lump_sum_withdrawals: lumpSumWithdrawals > 0 ? lumpSumWithdrawals : null,
     });
   }
 

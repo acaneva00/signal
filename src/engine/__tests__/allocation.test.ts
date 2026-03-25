@@ -535,20 +535,18 @@ describe('processDeficit', () => {
 // ── Default Rules ────────────────────────────────────────────────────────────
 
 describe('default rules', () => {
-  it('DEFAULT_SURPLUS_RULES matches spec: buffer → debt → cash', () => {
+  it('DEFAULT_SURPLUS_RULES matches spec: all surplus to cash', () => {
     expect(DEFAULT_SURPLUS_RULES).toEqual([
-      { type: 'emergency_buffer' },
-      { type: 'extra_debt_repayment', strategy: 'avalanche' },
       { type: 'remainder_to_cash' },
     ]);
   });
 
-  it('DEFAULT_DRAWDOWN_RULES matches spec: cash → fixed → shares → super → property', () => {
+  it('DEFAULT_DRAWDOWN_RULES matches spec: cash → fixed → super → shares → property', () => {
     expect(DEFAULT_DRAWDOWN_RULES).toEqual([
       { type: 'cash' },
       { type: 'fixed_interest' },
-      { type: 'shares' },
       { type: 'super' },
+      { type: 'shares' },
       { type: 'property' },
     ]);
   });

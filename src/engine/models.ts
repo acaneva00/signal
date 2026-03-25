@@ -83,19 +83,33 @@ export type ExpenseCategory = z.infer<typeof ExpenseCategoryEnum>;
 
 // ── Person & Household ───────────────────────────────────────────────────────
 
+/** ISO 8601 date string (YYYY-MM-DD) for age calculation. */
+export const DateOfBirthSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+
 export const PersonSchema = z.object({
   id: z.string().describe("Unique identifier, e.g. 'person_1'"),
   name: z.string().default(""),
-  date_of_birth_year: z.number().int().describe("Birth year for age calculation"),
+  date_of_birth: DateOfBirthSchema.describe("Date of birth (ISO YYYY-MM-DD) for age calculation"),
   gender: GenderEnum.default("other"),
   is_australian_resident: z.boolean().default(true),
   employment_status: EmploymentStatusEnum.default("employed"),
   intended_retirement_age: z.number().int().nullable().default(67),
+  intended_retirement_month: z.number().int().min(1).max(12).nullable().default(null).describe("Month to retire (1-12); defaults to birth month if null"),
   has_hecs_help_debt: z.boolean().default(false),
   hecs_help_balance: z.number().default(0.0),
   is_homeowner: z.boolean().default(true), // for Centrelink assets test thresholds
 });
 export type Person = z.infer<typeof PersonSchema>;
+
+/** Extract birth year from ISO date string (YYYY-MM-DD). */
+export function getBirthYearFromDate(dateOfBirth: string): number {
+  return parseInt(dateOfBirth.slice(0, 4), 10);
+}
+
+/** Extract birth month from ISO date string (YYYY-MM-DD). */
+export function getBirthMonthFromDate(dateOfBirth: string): number {
+  return parseInt(dateOfBirth.slice(5, 7), 10);
+}
 
 export const HouseholdSchema = z.object({
   members: z.array(PersonSchema).min(1).max(2).describe("A household: one or two adults plus optional dependents"),
@@ -113,8 +127,8 @@ export const IncomeStreamSchema = z.object({
   gross_annual: z.number().describe("Gross annual income in AUD"),
   includes_super: z.boolean().default(false), // True if gross includes SG
   growth_rate: z.number().default(0.035), // annual wage growth
-  start_year: z.number().int().nullable().default(null), // None = from projection start
-  end_year: z.number().int().nullable().default(null), // None = until retirement
+  start_year: z.number().int().nullable().default(null).describe("First FY to apply; income applies from July of this year"),
+  end_year: z.number().int().nullable().default(null).describe("Last FY to apply; income applies through June of this year"),
   salary_sacrifice_amount: z.number().default(0.0), // annual pre-tax super contribution
 });
 export type IncomeStream = z.infer<typeof IncomeStreamSchema>;
@@ -126,8 +140,8 @@ export const ExpenseSchema = z.object({
   category: ExpenseCategoryEnum.default("essential"),
   annual_amount: z.number().default(0.0),
   inflation_adjusted: z.boolean().default(true),
-  start_year: z.number().int().nullable().default(null),
-  end_year: z.number().int().nullable().default(null),
+  start_year: z.number().int().nullable().default(null).describe("First FY to apply; expenses apply from July of this year"),
+  end_year: z.number().int().nullable().default(null).describe("Last FY to apply; expenses apply through June of this year"),
 });
 export type Expense = z.infer<typeof ExpenseSchema>;
 
@@ -185,6 +199,12 @@ export const SuperFundSchema = z.object({
 
   // Pension drawdown (if in pension phase)
   pension_drawdown_rate: z.number().nullable().default(null), // if None, use minimum
+
+  // First year of pension: balance at commencement for prorated minimum (ATO rule)
+  pension_start_balance: z.number().nullable().optional(),
+
+  // Later pension years: 1 July opening balance for fixed min ABP (ATO rule)
+  fy_opening_balance: z.number().nullable().optional(),
 });
 export type SuperFund = z.infer<typeof SuperFundSchema>;
 
@@ -221,10 +241,12 @@ export type Liability = z.infer<typeof LiabilitySchema>;
 
 export const ScheduledCashFlowSchema = z.object({
   year: z.number().int(),
-  amount: z.number(), // positive = inflow, negative = outflow
+  amount: z.number(), // positive = inflow, negative = outflow; for source=super, amount = withdrawal size
   description: z.string().default(""),
   person_id: z.string().nullable().default(null), // None = household level
   is_taxable: z.boolean().default(false),
+  /** When 'super', reduces super balance directly (lump sum withdrawal). Amount is the withdrawal size. */
+  source: z.enum(['super', 'general']).optional().default('general'),
 });
 export type ScheduledCashFlow = z.infer<typeof ScheduledCashFlowSchema>;
 
@@ -335,6 +357,8 @@ export const ScenarioSchema = z.object({
 
   // NEW: Allocation rules (PRD 8.6)
   allocation_rules: AllocationRulesSchema.optional(),
+
+  projection_scope: z.enum(['super_only', 'full_model']).optional().describe("Set by scenario builder for super-only transition year pro-rating"),
 });
 export type Scenario = z.infer<typeof ScenarioSchema>;
 
@@ -352,6 +376,7 @@ export const PersonMonthDetailSchema = z.object({
   super_investment_return: z.number().default(0.0),
   super_fees: z.number().default(0.0),
   super_pension_drawdown: z.number().default(0.0),
+  super_lump_sum_withdrawal: z.number().default(0.0),
   taxable_income: z.number().default(0.0),
   tax_payable: z.number().default(0.0),
   medicare_levy: z.number().default(0.0),
@@ -379,6 +404,7 @@ export const MonthSnapshotSchema = z.object({
   total_loan_repayments: z.number().default(0.0),
   total_tax: z.number().default(0.0),
   scheduled_cashflows_net: z.number().default(0.0),
+  lump_sum_withdrawals_this_month: z.number().default(0.0),
   net_cash_flow: z.number().default(0.0),
 
   // Balance sheet
@@ -395,6 +421,11 @@ export const MonthSnapshotSchema = z.object({
   // Asset breakdown
   asset_values: z.record(z.string(), z.number()).default({}),
   liability_balances: z.record(z.string(), z.number()).default({}),
+
+  // Deficit drawdown by source (for charting)
+  drawdown_cash_this_month: z.number().default(0.0),
+  drawdown_sale_this_month: z.number().default(0.0),
+  drawdown_super_additional_this_month: z.number().default(0.0),
 });
 export type MonthSnapshot = z.infer<typeof MonthSnapshotSchema>;
 
@@ -417,8 +448,8 @@ export type ProjectionResult = z.infer<typeof ProjectionResultSchema>;
  * 
  * Example:
  * {
- *   "project_retirement": ["date_of_birth_year", "intended_retirement_age", "super_balance"],
- *   "calculate_age_pension": ["date_of_birth_year", "relationship_status", "assets", "super_balance"]
+ *   "project_retirement": ["date_of_birth", "intended_retirement_age", "super_balance"],
+ *   "calculate_age_pension": ["date_of_birth", "relationship_status", "assets", "super_balance"]
  * }
  */
 export type RequiredVariables = Record<string, string[]>;

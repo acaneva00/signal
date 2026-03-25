@@ -8,6 +8,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { project } from '../engine';
+import { createSummary } from '../api';
 import type {
   Scenario,
   Person,
@@ -23,15 +24,16 @@ import type {
 
 // ── Factory Helpers ──────────────────────────────────────────────────────────
 
-function makePerson(overrides: Partial<Person> & { id: string; date_of_birth_year: number }): Person {
+function makePerson(overrides: Partial<Person> & { id: string; date_of_birth: string }): Person {
   return {
     id: overrides.id,
     name: overrides.name ?? '',
-    date_of_birth_year: overrides.date_of_birth_year,
+    date_of_birth: overrides.date_of_birth,
     gender: overrides.gender ?? 'other',
     is_australian_resident: overrides.is_australian_resident ?? true,
     employment_status: overrides.employment_status ?? 'employed',
     intended_retirement_age: overrides.intended_retirement_age ?? 67,
+    intended_retirement_month: overrides.intended_retirement_month ?? null,
     has_hecs_help_debt: overrides.has_hecs_help_debt ?? false,
     hecs_help_balance: overrides.hecs_help_balance ?? 0,
     is_homeowner: overrides.is_homeowner ?? false,
@@ -100,6 +102,7 @@ function makeSuperFund(overrides: Partial<SuperFund> & { person_id: string }): S
     voluntary_non_concessional: overrides.voluntary_non_concessional ?? 0,
     spouse_contribution: overrides.spouse_contribution ?? 0,
     pension_drawdown_rate: overrides.pension_drawdown_rate ?? null,
+    pension_start_balance: overrides.pension_start_balance ?? null,
   };
 }
 
@@ -164,6 +167,7 @@ function buildScenario(overrides: Partial<Scenario> & { household: Household }):
     scheduled_cash_flows: overrides.scheduled_cash_flows ?? [],
     assumptions: overrides.assumptions ?? makeAssumptions(),
     allocation_rules: overrides.allocation_rules,
+    projection_scope: overrides.projection_scope,
   };
 }
 
@@ -172,7 +176,7 @@ function buildScenario(overrides: Partial<Scenario> & { household: Household }):
 describe('Projection Engine', () => {
   describe('12-month short run', () => {
     it('should produce exactly 12 MonthSnapshots for a 1-year projection', () => {
-      const person = makePerson({ id: 'p1', date_of_birth_year: 1990 });
+      const person = makePerson({ id: 'p1', date_of_birth: '1990-06-15' });
       const scenario = buildScenario({
         start_year: 2025,
         projection_years: 1,
@@ -193,7 +197,7 @@ describe('Projection Engine', () => {
   });
 
   describe('Single person, 30-year-old, $80k income, $50k super', () => {
-    const person = makePerson({ id: 'p1', date_of_birth_year: 1995, intended_retirement_age: 67 });
+    const person = makePerson({ id: 'p1', date_of_birth: '1995-06-15', intended_retirement_age: 67 });
     const scenario = buildScenario({
       start_year: 2025,
       projection_years: 60,
@@ -244,8 +248,8 @@ describe('Projection Engine', () => {
   });
 
   describe('Couple scenario — staggered retirement', () => {
-    const person1 = makePerson({ id: 'p1', date_of_birth_year: 1965, intended_retirement_age: 60 });
-    const person2 = makePerson({ id: 'p2', date_of_birth_year: 1965, intended_retirement_age: 67 });
+    const person1 = makePerson({ id: 'p1', date_of_birth: '1965-06-15', intended_retirement_age: 60 });
+    const person2 = makePerson({ id: 'p2', date_of_birth: '1965-06-15', intended_retirement_age: 67 });
 
     const scenario = buildScenario({
       start_year: 2025,
@@ -301,9 +305,112 @@ describe('Projection Engine', () => {
     });
   });
 
+  describe('Surplus allocation when expenses not modeled', () => {
+    it('should not allocate surplus when totalExpenses is 0 (e.g. super-only pre-retirement)', () => {
+      const person = makePerson({ id: 'p1', date_of_birth: '1990-06-15', intended_retirement_age: 67 });
+      const scenario = buildScenario({
+        start_year: 2025,
+        projection_years: 2,
+        household: { members: [person], relationship_status: 'single', num_dependents: 0, dependents_ages: [] },
+        income_streams: [makeIncome({ person_id: 'p1', gross_annual: 80_000 })],
+        expenses: [], // No expenses modeled — we don't know true surplus
+        super_funds: [makeSuperFund({ person_id: 'p1', balance: 50_000 })],
+        assets: [],
+      });
+
+      const result = project(scenario);
+
+      // Surplus should not be allocated; total_assets stays 0 (no cash asset created)
+      const lastSnap = result.snapshots[result.snapshots.length - 1];
+      expect(lastSnap?.total_assets ?? 0).toBe(0);
+    });
+  });
+
+  describe('Deficit drawdown with empty rules', () => {
+    it('should draw from super to fund deficit when drawdown_priority is empty', () => {
+      // Retired person (65 in 2025), super-only, high expenses create deficit.
+      // Minimum pension (~4% of balance) + Age Pension < expenses.
+      const person = makePerson({
+        id: 'p1',
+        date_of_birth: '1960-06-15',
+        intended_retirement_age: 64,
+        is_homeowner: true,
+      });
+      const scenario = buildScenario({
+        start_year: 2025,
+        projection_years: 5,
+        household: { members: [person], relationship_status: 'single', num_dependents: 0, dependents_ages: [] },
+        income_streams: [],
+        expenses: [makeExpense({ annual_amount: 90_000, start_year: 2025 })],
+        super_funds: [makeSuperFund({ person_id: 'p1', balance: 500_000 })],
+        assets: [],
+        allocation_rules: {
+          surplus_priority: [
+            { type: 'super_contribution', monthly_amount: 1_000_000, target_asset_id: 'p1' },
+          ],
+          drawdown_priority: [],
+        },
+      });
+
+      const result = project(scenario);
+
+      const deficitWarnings = result.warnings.filter(w => w.includes('Cannot fund deficit'));
+      expect(deficitWarnings).toHaveLength(0);
+      const firstSuper = result.snapshots[0]?.total_super ?? 0;
+      const lastSuper = result.snapshots[result.snapshots.length - 1]?.total_super ?? 0;
+      expect(lastSuper).toBeLessThan(firstSuper);
+
+      // Deficit is processed monthly; at least some months should have additional super drawdown
+      const snapsWithSuperDrawdown = result.snapshots.filter(
+        s => (s.drawdown_super_additional_this_month ?? 0) > 0,
+      );
+      expect(snapsWithSuperDrawdown.length).toBeGreaterThan(0);
+    });
+
+    it('should draw from cash before super when super_only and both exist (cash-first order)', () => {
+      // Retired person, super_only, high expenses create deficit. Has cash + super.
+      // SUPER_ONLY_DRAWDOWN_RULES: cash first, then super. Cash should be drawn before super.
+      const person = makePerson({
+        id: 'p1',
+        date_of_birth: '1960-06-15',
+        intended_retirement_age: 64,
+        is_homeowner: true,
+      });
+      const scenario = buildScenario({
+        start_year: 2025,
+        projection_years: 3,
+        projection_scope: 'super_only',
+        household: { members: [person], relationship_status: 'single', num_dependents: 0, dependents_ages: [] },
+        income_streams: [],
+        expenses: [makeExpense({ annual_amount: 90_000, start_year: 2025 })],
+        super_funds: [makeSuperFund({ person_id: 'p1', balance: 500_000 })],
+        assets: [makeAsset({ id: 'cash1', asset_class: 'cash', current_value: 25_000, owner_id: 'p1' })],
+      });
+
+      const result = project(scenario);
+
+      const deficitWarnings = result.warnings.filter(w => w.includes('Cannot fund deficit'));
+      expect(deficitWarnings).toHaveLength(0);
+
+      // Cash-first: at least some months should draw from cash
+      const snapsWithCashDrawdown = result.snapshots.filter(
+        s => (s.drawdown_cash_this_month ?? 0) > 0,
+      );
+      expect(snapsWithCashDrawdown.length).toBeGreaterThan(0);
+
+      // First months with deficit should draw from cash before super (cash exhausted first)
+      const firstSnapWithDeficit = result.snapshots.find(
+        s => (s.drawdown_cash_this_month ?? 0) > 0 || (s.drawdown_super_additional_this_month ?? 0) > 0,
+      );
+      expect(firstSnapWithDeficit).toBeDefined();
+      // With 25k cash and ~7.5k/month shortfall, cash funds ~3 months. First draws should be cash.
+      expect(firstSnapWithDeficit!.drawdown_cash_this_month ?? 0).toBeGreaterThan(0);
+    });
+  });
+
   describe('Net worth invariant', () => {
     it('should equal total assets + total super - total liabilities at every snapshot', () => {
-      const person = makePerson({ id: 'p1', date_of_birth_year: 1990 });
+      const person = makePerson({ id: 'p1', date_of_birth: '1990-06-15' });
       const scenario = buildScenario({
         start_year: 2025,
         projection_years: 5,
@@ -332,7 +439,7 @@ describe('Projection Engine', () => {
 
   describe('Homeowner with mortgage', () => {
     it('should reduce principal each month for a P&I mortgage', () => {
-      const person = makePerson({ id: 'p1', date_of_birth_year: 1990, is_homeowner: true });
+      const person = makePerson({ id: 'p1', date_of_birth: '1990-06-15', is_homeowner: true });
       const scenario = buildScenario({
         start_year: 2025,
         projection_years: 2,
@@ -384,7 +491,7 @@ describe('Projection Engine', () => {
 
   describe('Snapshot consistency', () => {
     it('should have sequential year/month pairs in snapshots', () => {
-      const person = makePerson({ id: 'p1', date_of_birth_year: 1990 });
+      const person = makePerson({ id: 'p1', date_of_birth: '1990-06-15' });
       const scenario = buildScenario({
         start_year: 2025,
         projection_years: 3,
@@ -408,8 +515,8 @@ describe('Projection Engine', () => {
     });
 
     it('should include person details for each household member in every snapshot', () => {
-      const p1 = makePerson({ id: 'p1', date_of_birth_year: 1985 });
-      const p2 = makePerson({ id: 'p2', date_of_birth_year: 1987 });
+      const p1 = makePerson({ id: 'p1', date_of_birth: '1985-06-15' });
+      const p2 = makePerson({ id: 'p2', date_of_birth: '1987-06-15' });
 
       const scenario = buildScenario({
         start_year: 2025,
@@ -442,7 +549,7 @@ describe('Projection Engine', () => {
 
   describe('Metadata', () => {
     it('should include monthly_resolution flag in metadata', () => {
-      const person = makePerson({ id: 'p1', date_of_birth_year: 1990 });
+      const person = makePerson({ id: 'p1', date_of_birth: '1990-06-15' });
       const scenario = buildScenario({
         start_year: 2025,
         projection_years: 1,
@@ -458,7 +565,7 @@ describe('Projection Engine', () => {
 
   describe('Employment income should be non-negative', () => {
     it('should never produce negative employment income', () => {
-      const person = makePerson({ id: 'p1', date_of_birth_year: 1995 });
+      const person = makePerson({ id: 'p1', date_of_birth: '1995-06-15' });
       const scenario = buildScenario({
         start_year: 2025,
         projection_years: 5,
@@ -478,7 +585,7 @@ describe('Projection Engine', () => {
 
   describe('Super grows during accumulation', () => {
     it('should show increasing super balance with SG contributions and earnings', () => {
-      const person = makePerson({ id: 'p1', date_of_birth_year: 1995 });
+      const person = makePerson({ id: 'p1', date_of_birth: '1995-06-15' });
       const scenario = buildScenario({
         start_year: 2025,
         projection_years: 2,
@@ -507,7 +614,7 @@ describe('Projection Engine', () => {
 
   describe('Zero income, zero expense scenario', () => {
     it('should run without errors and produce snapshots', () => {
-      const person = makePerson({ id: 'p1', date_of_birth_year: 1990 });
+      const person = makePerson({ id: 'p1', date_of_birth: '1990-06-15' });
       const scenario = buildScenario({
         start_year: 2025,
         projection_years: 1,
@@ -518,6 +625,312 @@ describe('Projection Engine', () => {
 
       expect(result.snapshots.length).toBeGreaterThan(0);
       expect(result.warnings).toBeDefined();
+    });
+  });
+
+  describe('Super-only: surplus creates cash for future shortfalls', () => {
+    it('should allocate surplus to cash in retirement years only (not accumulation)', () => {
+      // Super-only: person retires at 64 (June 2050). First retirement month = July 2050. FY 2051 = first retirement FY.
+      // Use high super balance so pension drawdown > expenses, creating surplus to allocate.
+      const person = makePerson({
+        id: 'p1',
+        date_of_birth: '1986-06-15',
+        intended_retirement_age: 64,
+      });
+      const scenario = buildScenario({
+        start_year: 2049,
+        projection_years: 5,
+        projection_scope: 'super_only',
+        household: { members: [person], relationship_status: 'single', num_dependents: 0, dependents_ages: [] },
+        income_streams: [makeIncome({ person_id: 'p1', gross_annual: 80_000 })],
+        expenses: [makeExpense({ name: 'Retirement expenses', annual_amount: 30_000, start_year: 2050 })],
+        super_funds: [makeSuperFund({ person_id: 'p1', balance: 1_500_000 })],
+        assets: [],
+      });
+
+      const result = project(scenario);
+
+      // Surplus in first retirement FY (July 2050–June 2051) should be allocated to cash
+      const juneSnaps = result.snapshots.filter(s => s.month === 6 && s.year >= 2051);
+      expect(juneSnaps.length).toBeGreaterThan(0);
+      const totalAssetsAtLastJune = juneSnaps[juneSnaps.length - 1]?.total_assets ?? 0;
+      expect(totalAssetsAtLastJune).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Retirement month logic', () => {
+    it('should retire in birth month by default (June → first retirement month July)', () => {
+      // Person born 1965-06-15, retires at 60 → retirement year 2025, month 6. First retirement = July 2025.
+      // Start in 2024 so we have June 2025 in the projection.
+      const person = makePerson({ id: 'p1', date_of_birth: '1965-06-15', intended_retirement_age: 60 });
+      const scenario = buildScenario({
+        start_year: 2024,
+        projection_years: 4,
+        household: { members: [person], relationship_status: 'single', num_dependents: 0, dependents_ages: [] },
+        income_streams: [makeIncome({ person_id: 'p1', gross_annual: 80_000 })],
+        expenses: [makeExpense({ annual_amount: 40_000 })],
+        super_funds: [makeSuperFund({ person_id: 'p1', balance: 100_000 })],
+        assets: [],
+      });
+
+      const result = project(scenario);
+
+      // June 2025: still employed
+      const june2025 = result.snapshots.find(s => s.year === 2025 && s.month === 6);
+      expect(june2025).toBeDefined();
+      expect(june2025!.total_employment_income).toBeGreaterThan(0);
+
+      // July 2025: first retirement month
+      const july2025 = result.snapshots.find(s => s.year === 2025 && s.month === 7);
+      expect(july2025?.total_employment_income).toBe(0);
+    });
+
+    it('should retire in September when intended_retirement_month is 9', () => {
+      // Person born 1965-03-01, retires at 60 in Sept 2025. First retirement month = Oct 2025.
+      const person = makePerson({
+        id: 'p1',
+        date_of_birth: '1965-03-01',
+        intended_retirement_age: 60,
+        intended_retirement_month: 9,
+      });
+      const scenario = buildScenario({
+        start_year: 2025,
+        projection_years: 3,
+        household: { members: [person], relationship_status: 'single', num_dependents: 0, dependents_ages: [] },
+        income_streams: [makeIncome({ person_id: 'p1', gross_annual: 80_000 })],
+        expenses: [makeExpense({ annual_amount: 40_000 })],
+        super_funds: [makeSuperFund({ person_id: 'p1', balance: 100_000 })],
+        assets: [],
+      });
+
+      const result = project(scenario);
+
+      // Sept 2025: still employed (retires at end of Sept)
+      const sept2025 = result.snapshots.find(s => s.year === 2025 && s.month === 9);
+      expect(sept2025?.total_employment_income).toBeGreaterThan(0);
+
+      // Oct 2025: first retirement month
+      const oct2025 = result.snapshots.find(s => s.year === 2025 && s.month === 10);
+      expect(oct2025?.total_employment_income).toBe(0);
+    });
+  });
+
+  describe('Super-only transition year pro-rating', () => {
+    it('should pro-rate retirement expenses when retiring in September', () => {
+      // Person retires Sept 2025. FY 2026 = July 2025–June 2026. Retirement months = Oct 2025–June 2026 (9 months).
+      // Target 100k/year → 9/12 × 100k = 75k for transition year.
+      // start_year: 2025 so expense applies from July 2025; engine skips July–Sept when not retired.
+      const person = makePerson({
+        id: 'p1',
+        date_of_birth: '1965-03-01',
+        intended_retirement_age: 60,
+        intended_retirement_month: 9,
+      });
+      const scenario = buildScenario({
+        start_year: 2025,
+        projection_years: 2,
+        projection_scope: 'super_only',
+        household: { members: [person], relationship_status: 'single', num_dependents: 0, dependents_ages: [] },
+        income_streams: [],
+        expenses: [makeExpense({ name: 'Retirement expenses', annual_amount: 100_000, start_year: 2026, inflation_adjusted: false })], // FY 2026 = July 2025–June 2026
+        super_funds: [makeSuperFund({ person_id: 'p1', balance: 500_000 })],
+        assets: [],
+      });
+
+      const result = project(scenario);
+
+      // Transition FY 2026: July–Sept 2025 = 0 retirement expenses; Oct 2025–June 2026 = 9 months
+      const fy2026Snaps = result.snapshots.filter(s =>
+        (s.year === 2025 && s.month >= 7) || (s.year === 2026 && s.month <= 6),
+      );
+      const totalExpensesFY2026 = fy2026Snaps.reduce((sum, s) => sum + s.total_expenses, 0);
+      // 9 months × (100k/12) = 75,000
+      expect(totalExpensesFY2026).toBeCloseTo(75_000, -2);
+    });
+
+    it('two-pass: transition year has zero shortfall when income matches target', () => {
+      // Person retires Sept 2029 (age 64). FY 2030 = July 2029–June 2030. Retirement months = Oct 2029–June 2030 (9 months).
+      // Two-pass excludes employment and tax refund from shortfall sizing (retirement income sources only).
+      const person = makePerson({
+        id: 'p1',
+        date_of_birth: '1965-09-15',
+        intended_retirement_age: 64,
+        intended_retirement_month: 9,
+      });
+      const scenario = buildScenario({
+        start_year: 2029,
+        projection_years: 2,
+        projection_scope: 'super_only',
+        household: { members: [person], relationship_status: 'single', num_dependents: 0, dependents_ages: [] },
+        income_streams: [
+          makeIncome({ person_id: 'p1', gross_annual: 80_000, start_year: 2029, end_year: 2029 }),
+        ],
+        expenses: [makeExpense({ name: 'Retirement expenses', annual_amount: 102_000, start_year: 2030, inflation_adjusted: false })],
+        super_funds: [makeSuperFund({ person_id: 'p1', balance: 600_000 })],
+        assets: [],
+      });
+
+      const result = project(scenario);
+      const summary = createSummary(result);
+      const transitionPoint = summary.trajectory.find(
+        p => p.is_retirement_year && p.age === 64 && p.month === 6,
+      );
+      expect(transitionPoint).toBeDefined();
+
+      const totalIncome =
+        (transitionPoint!.employment_income_annual ?? 0) +
+        (transitionPoint!.super_drawdown_min_annual ?? 0) +
+        (transitionPoint!.super_drawdown_additional_annual ?? 0) +
+        (transitionPoint!.age_pension_annual ?? 0) +
+        (transitionPoint!.non_super_income_annual ?? 0) +
+        (transitionPoint!.non_super_drawdown_cash_annual ?? 0) +
+        (transitionPoint!.non_super_drawdown_sale_annual ?? 0) +
+        (transitionPoint!.tax_refund_annual ?? 0);
+      const target = transitionPoint!.retirement_spending_target ?? 0;
+      const shortfall = Math.max(0, target - totalIncome);
+
+      // Mid-year recalibration at March can produce ~$4 residual from rounding; allow $5 tolerance
+      expect(shortfall).toBeLessThan(5);
+      expect(totalIncome).toBeCloseTo(target, -2);
+      expect(transitionPoint!.super_drawdown_additional_annual).toBeGreaterThan(55_000);
+      expect(transitionPoint!.super_drawdown_additional_annual).toBeLessThan(65_000);
+    });
+  });
+
+  describe('Chart trajectory segments (net-of-tax)', () => {
+    it('trajectory segments sum to retirement_spending_target within tolerance when target is funded', () => {
+      // Use two-pass scenario where we know shortfall is zero (income matches target)
+      const person = makePerson({
+        id: 'p1',
+        date_of_birth: '1965-09-15',
+        intended_retirement_age: 64,
+        intended_retirement_month: 9,
+      });
+      const scenario = buildScenario({
+        start_year: 2029,
+        projection_years: 2,
+        projection_scope: 'super_only',
+        household: { members: [person], relationship_status: 'single', num_dependents: 0, dependents_ages: [] },
+        income_streams: [
+          makeIncome({ person_id: 'p1', gross_annual: 80_000, start_year: 2029, end_year: 2029 }),
+        ],
+        expenses: [makeExpense({ name: 'Retirement expenses', annual_amount: 102_000, start_year: 2030, inflation_adjusted: false })],
+        super_funds: [makeSuperFund({ person_id: 'p1', balance: 600_000 })],
+        assets: [],
+      });
+
+      const result = project(scenario);
+      const summary = createSummary(result);
+      const transitionPoint = summary.trajectory.find(
+        p => p.is_retirement_year && p.age === 64 && p.month === 6,
+      );
+      expect(transitionPoint).toBeDefined();
+
+      const totalIncome =
+        (transitionPoint!.employment_income_annual ?? 0) +
+        (transitionPoint!.super_drawdown_min_annual ?? 0) +
+        (transitionPoint!.super_drawdown_additional_annual ?? 0) +
+        (transitionPoint!.age_pension_annual ?? 0) +
+        (transitionPoint!.non_super_income_annual ?? 0) +
+        (transitionPoint!.non_super_drawdown_cash_annual ?? 0) +
+        (transitionPoint!.non_super_drawdown_sale_annual ?? 0) +
+        (transitionPoint!.tax_refund_annual ?? 0);
+      const target = transitionPoint!.retirement_spending_target ?? 0;
+      expect(Math.abs(totalIncome - target)).toBeLessThanOrEqual(10);
+    });
+  });
+
+  describe('June cap (two-pass)', () => {
+    it('June cap prevents over-draw when Age Pension increases mid-year (full retirement year)', () => {
+      // Same scenario as "trajectory segments sum" but extended to include first full retirement year.
+      // Person retires Sept 2029 (age 64). FY 2030 = transition year. FY 2031 = first full retirement year.
+      // Super balance in taper zone: Age Pension increases as super is drawn (Sept/March reassessment).
+      const person = makePerson({
+        id: 'p1',
+        date_of_birth: '1965-09-15',
+        intended_retirement_age: 64,
+        intended_retirement_month: 9,
+        is_homeowner: true,
+      });
+      const scenario = buildScenario({
+        start_year: 2029,
+        projection_years: 3,
+        projection_scope: 'super_only',
+        household: { members: [person], relationship_status: 'single', num_dependents: 0, dependents_ages: [] },
+        income_streams: [
+          makeIncome({ person_id: 'p1', gross_annual: 80_000, start_year: 2029, end_year: 2029 }),
+        ],
+        expenses: [makeExpense({ name: 'Retirement expenses', annual_amount: 102_000, start_year: 2030, inflation_adjusted: false })],
+        super_funds: [makeSuperFund({ person_id: 'p1', balance: 600_000 })],
+        assets: [],
+      });
+
+      const result = project(scenario);
+      const summary = createSummary(result);
+      // FY 2031 = first full retirement year (July 2030–June 2031), age 65 at June
+      const fullRetirementPoint = summary.trajectory.find(
+        p => p.age === 65 && p.month === 6 && p.is_retirement_year,
+      );
+      expect(fullRetirementPoint).toBeDefined();
+
+      const totalIncome =
+        (fullRetirementPoint!.super_drawdown_min_annual ?? 0) +
+        (fullRetirementPoint!.super_drawdown_additional_annual ?? 0) +
+        (fullRetirementPoint!.age_pension_annual ?? 0) +
+        (fullRetirementPoint!.non_super_income_annual ?? 0) +
+        (fullRetirementPoint!.tax_refund_annual ?? 0);
+      const target = fullRetirementPoint!.retirement_spending_target ?? 0;
+
+      // With June cap: total income should match target within tolerance (no ~$6k surplus)
+      expect(Math.abs(totalIncome - target)).toBeLessThanOrEqual(100);
+    });
+  });
+
+  describe('Reactive shortfall (full projection)', () => {
+    it('monthly draws are more even when retired with taxable passive (no June spike)', () => {
+      // Full projection (not super_only) uses reactive shortfall. Retiree with age pension
+      // and asset income; totalPayg is 0 for 11 months. Fix: use estimatedMonthlyTax so
+      // draws are spread across the year.
+      const person = makePerson({
+        id: 'p1',
+        date_of_birth: '1958-06-15',
+        intended_retirement_age: 67,
+        is_homeowner: true,
+      });
+      const scenario = buildScenario({
+        start_year: 2025,
+        projection_years: 3,
+        household: { members: [person], relationship_status: 'single', num_dependents: 0, dependents_ages: [] },
+        income_streams: [],
+        expenses: [makeExpense({ annual_amount: 65_000, start_year: 2025 })],
+        super_funds: [makeSuperFund({ person_id: 'p1', balance: 300_000 })],
+        assets: [
+          makeAsset({
+            id: 'shares',
+            asset_class: 'australian_shares',
+            current_value: 50_000,
+            cost_base: 50_000,
+            income_yield: 0.04,
+            owner_id: 'p1',
+          }),
+        ],
+      });
+
+      const result = project(scenario);
+
+      // FY 2026 (July 2025–June 2026): person is 67, retired, has age pension + dividends
+      const fy2026Snaps = result.snapshots.filter(s =>
+        (s.year === 2025 && s.month >= 7) || (s.year === 2026 && s.month <= 6),
+      );
+      const drawsByMonth = fy2026Snaps.map(s => (s.drawdown_super_additional_this_month ?? 0) + (s.drawdown_cash_this_month ?? 0));
+      const juneDraw = fy2026Snaps.find(s => s.month === 6);
+      const juneAmount = (juneDraw?.drawdown_super_additional_this_month ?? 0) + (juneDraw?.drawdown_cash_this_month ?? 0);
+      const avgMonthly = drawsByMonth.reduce((a, b) => a + b, 0) / 12;
+
+      // June should not be a huge outlier (e.g. 3× average) — tax was spread across months
+      if (avgMonthly > 100) {
+        expect(juneAmount).toBeLessThan(avgMonthly * 3);
+      }
     });
   });
 });

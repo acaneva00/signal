@@ -40,6 +40,14 @@ When collecting information from users, check if the field matches a known struc
 **financial_interests**
 - Options: Retirement planning | Tax optimisation | Investing | Debt management | Budgeting | Super
 
+### Date Input Fields
+
+**date_of_birth**
+- Format: dd/mm/yyyy | Display: Australian format | Stored as ISO YYYY-MM-DD
+
+**partner_date_of_birth**
+- Format: dd/mm/yyyy | Display: Australian format | Stored as ISO YYYY-MM-DD
+
 ### Numeric Input Fields
 
 **annual_income**
@@ -90,6 +98,16 @@ When mentioning that a structured input should be used, describe it like this:
 }
 ```
 
+**For date:**
+```
+{ 
+  type: 'date', 
+  dateFormat: 'dd/mm/yyyy', 
+  field: 'date_of_birth', 
+  required: true 
+}
+```
+
 **For numeric_input:**
 ```
 { 
@@ -105,6 +123,10 @@ When mentioning that a structured input should be used, describe it like this:
 ❌ **Don't say:** "What's your age range?"
 
 ✅ **Instead say:** "I need to collect your age range. The frontend should display this as a structured input: `{ type: 'single_select', options: [...age ranges...], field: 'age_range', required: true }`"
+
+❌ **Don't say:** "What's your date of birth?"
+
+✅ **Instead say:** "I need to collect your date of birth. The frontend should display this as a date input: `{ type: 'date', dateFormat: 'dd/mm/yyyy', field: 'date_of_birth', required: true }`"
 
 ❌ **Don't say:** "How much is your annual income?"
 

@@ -26,17 +26,15 @@ export const FIELD_REGISTRY: Record<string, FieldDefinition> = {
 
   // ── Identity & Demographics ──────────────────────────────────────────────
 
-  date_of_birth_year: {
-    dataType: 'number',
+  date_of_birth: {
+    dataType: 'string',
     inputRequest: {
-      type: 'numeric',
-      field: 'date_of_birth_year',
+      type: 'date',
+      field: 'date_of_birth',
       required: true,
-      label: 'BIRTH YEAR',
-      placeholder: 'e.g. 1985',
-      format: 'year',
-      min: 1930,
-      max: 2010,
+      label: 'DATE OF BIRTH',
+      placeholder: 'dd/mm/yyyy',
+      dateFormat: 'dd/mm/yyyy',
     },
   },
   relationship_status: {
@@ -168,6 +166,30 @@ export const FIELD_REGISTRY: Record<string, FieldDefinition> = {
       max: 75,
     },
   },
+  intended_retirement_month: {
+    dataType: 'number',
+    inputRequest: {
+      type: 'chips',
+      field: 'intended_retirement_month',
+      required: false,
+      label: 'RETIREMENT MONTH',
+      hint: 'Month you plan to retire (defaults to birth month)',
+      options: [
+        { label: 'January', value: '1' },
+        { label: 'February', value: '2' },
+        { label: 'March', value: '3' },
+        { label: 'April', value: '4' },
+        { label: 'May', value: '5' },
+        { label: 'June', value: '6' },
+        { label: 'July', value: '7' },
+        { label: 'August', value: '8' },
+        { label: 'September', value: '9' },
+        { label: 'October', value: '10' },
+        { label: 'November', value: '11' },
+        { label: 'December', value: '12' },
+      ],
+    },
+  },
   projection_scope: {
     dataType: 'string',
     inputRequest: {
@@ -201,7 +223,7 @@ export const FIELD_REGISTRY: Record<string, FieldDefinition> = {
       field: 'retirement_expenses',
       required: true,
       label: 'RETIREMENT EXPENSES',
-      hint: 'Annual spending in retirement',
+      hint: "Annual spending in today's dollars — we'll index for inflation",
       placeholder: 'e.g. 60,000',
       format: 'currency',
       min: 0,
@@ -343,17 +365,15 @@ export const FIELD_REGISTRY: Record<string, FieldDefinition> = {
 
   // ── Partner Fields ───────────────────────────────────────────────────────
 
-  partner_date_of_birth_year: {
-    dataType: 'number',
+  partner_date_of_birth: {
+    dataType: 'string',
     inputRequest: {
-      type: 'numeric',
-      field: 'partner_date_of_birth_year',
+      type: 'date',
+      field: 'partner_date_of_birth',
       required: true,
-      label: "PARTNER'S BIRTH YEAR",
-      placeholder: 'e.g. 1987',
-      format: 'year',
-      min: 1930,
-      max: 2010,
+      label: "PARTNER'S DATE OF BIRTH",
+      placeholder: 'dd/mm/yyyy',
+      dateFormat: 'dd/mm/yyyy',
     },
   },
   partner_income: {
@@ -408,6 +428,30 @@ export const FIELD_REGISTRY: Record<string, FieldDefinition> = {
       format: 'age',
       min: 50,
       max: 75,
+    },
+  },
+  partner_intended_retirement_month: {
+    dataType: 'number',
+    inputRequest: {
+      type: 'chips',
+      field: 'partner_intended_retirement_month',
+      required: false,
+      label: "PARTNER'S RETIREMENT MONTH",
+      hint: 'Month your partner plans to retire (defaults to birth month)',
+      options: [
+        { label: 'January', value: '1' },
+        { label: 'February', value: '2' },
+        { label: 'March', value: '3' },
+        { label: 'April', value: '4' },
+        { label: 'May', value: '5' },
+        { label: 'June', value: '6' },
+        { label: 'July', value: '7' },
+        { label: 'August', value: '8' },
+        { label: 'September', value: '9' },
+        { label: 'October', value: '10' },
+        { label: 'November', value: '11' },
+        { label: 'December', value: '12' },
+      ],
     },
   },
   partner_is_default_investment: {

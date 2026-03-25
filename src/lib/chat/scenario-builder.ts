@@ -8,6 +8,8 @@
  */
 
 import { getAnnualBudget } from '@/engine/rates/asfa';
+import { getBirthMonthFromDate } from '@/engine/models';
+import { getFinancialYear } from '@/engine/super';
 
 export type ProfileData = Record<string, unknown>;
 
@@ -23,6 +25,10 @@ export interface ScenarioOverrides {
   super_fees_flat?: number;
   super_fees_percent?: number;
   projection_years?: number;
+  /** One-off lump sum withdrawal from super (e.g. at retirement). Applied in first July after retirement. */
+  lump_sum_withdrawal?: number;
+  /** Retirement month (1–12) override; defaults to birth month if not set. */
+  retirement_month?: number;
 }
 
 // ── Override → Profile Field Mapping ─────────────────────────────────────────
@@ -32,6 +38,7 @@ export interface ScenarioOverrides {
 
 export const OVERRIDE_TO_PROFILE_FIELD: Record<string, string> = {
   retirement_age: 'intended_retirement_age',
+  retirement_month: 'intended_retirement_month',
   annual_expenses: 'expenses',
 };
 
@@ -84,11 +91,12 @@ const SUPER_BAND_ESTIMATES: Record<string, number> = {
 const FIELD_PRIORITY: Record<string, number> = {
   super_fund_name: 0,
   projection_scope: 1,
-  date_of_birth_year: 2,
+  date_of_birth: 2,
   income: 3,
   super_balance: 4,
   expenses: 5,
   intended_retirement_age: 6,
+  intended_retirement_month: 6.5,
   is_default_investment: 7,
   super_investment_option: 8,
   relationship_status: 9,
@@ -103,11 +111,12 @@ const FIELD_PRIORITY: Record<string, number> = {
   assets: 18,
   liabilities: 19,
   surplus_allocation_strategy: 20,
-  partner_date_of_birth_year: 21,
+  partner_date_of_birth: 21,
   partner_income: 22,
   partner_super_balance: 23,
   partner_super_fund_name: 24,
   partner_intended_retirement_age: 25,
+  partner_intended_retirement_month: 25.5,
   partner_is_default_investment: 26,
   partner_super_investment_option: 27,
   dependants_count: 28,
@@ -126,12 +135,42 @@ export function sortFieldsByPriority(fields: string[]): string[] {
  * Resolve a single profile field, handling aliases and derived values.
  * Returns undefined if the field cannot be resolved from available data.
  */
+/** Parse dd/mm/yyyy or dd-mm-yyyy to ISO YYYY-MM-DD. Already-ISO strings pass through. */
+function normalizeToIsoDate(input: string): string {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(input)) return input;
+  const parts = input.split(/[\/\-\.]/).map((p) => p.trim());
+  if (parts.length !== 3) return input;
+  const [d, m, y] = parts.map((p) => parseInt(p, 10));
+  if (isNaN(d) || isNaN(m) || isNaN(y)) return input;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${y}-${pad(m)}-${pad(d)}`;
+}
+
 export function resolveProfileField(profile: ProfileData, field: string): unknown {
   const val = profile[field];
-  if (val !== undefined && val !== null) return val;
+  if (val !== undefined && val !== null && !['date_of_birth', 'partner_date_of_birth'].includes(field))
+    return val;
 
   switch (field) {
+    case 'date_of_birth': {
+      const dob = profile.date_of_birth;
+      const verified = profile.date_of_birth_verified === true;
+      const hasExplicitDob = typeof dob === 'string';
+      const hasDobYear = profile.date_of_birth_year != null;
+      let result: string | undefined = hasExplicitDob ? normalizeToIsoDate(dob) : undefined;
+      // Reject invalid dates (e.g. "40" or "1985" from "I am 40") — treat as missing so we ask
+      if (result && !/^\d{4}-\d{2}-\d{2}$/.test(result)) result = undefined;
+      // Only accept when user entered via DateCard (verified); reject agent-inferred dates
+      if (result && !verified) result = undefined;
+      // #region agent log
+      fetch('http://127.0.0.1:7587/ingest/9194df1b-2a00-4be9-ae88-babf17f415a1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'40eead'},body:JSON.stringify({sessionId:'40eead',location:'scenario-builder.ts:resolveProfileField date_of_birth',message:'date_of_birth resolution',data:{hasExplicitDob,hasDobYear,verified,returnedValue:result!==undefined},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
+      // #endregion
+      return result;
+    }
     case 'date_of_birth_year': {
+      const dob = profile.date_of_birth;
+      if (typeof dob === 'string') return parseInt(dob.slice(0, 4), 10);
+      if (profile.date_of_birth_year != null) return Number(profile.date_of_birth_year);
       if (typeof profile.age_range === 'string') {
         const mid = AGE_RANGE_MIDPOINTS[profile.age_range];
         if (mid) return new Date().getFullYear() - mid;
@@ -178,6 +217,8 @@ export function resolveProfileField(profile: ProfileData, field: string): unknow
       return profile.hecs_balance ?? undefined;
     case 'intended_retirement_age':
       return profile.retirement_age ?? undefined;
+    case 'intended_retirement_month':
+      return profile.intended_retirement_month ?? profile.retirement_month ?? undefined;
     case 'super_fees':
       return profile.super_fund_fees ?? undefined;
     case 'is_default_investment': {
@@ -197,8 +238,18 @@ export function resolveProfileField(profile: ProfileData, field: string): unknow
       return profile.projection_scope ?? undefined;
     case 'surplus_allocation_strategy':
       return profile.surplus_allocation_strategy ?? undefined;
-    case 'partner_date_of_birth_year':
+    case 'partner_date_of_birth': {
+      const pdob = profile.partner_date_of_birth;
+      const verified = profile.partner_date_of_birth_verified === true;
+      if (typeof pdob === 'string' && verified) return normalizeToIsoDate(pdob);
+      // Do NOT derive from partner_date_of_birth_year — partner_date_of_birth is mandatory when required
+      return undefined;
+    }
+    case 'partner_date_of_birth_year': {
+      const pdob = profile.partner_date_of_birth;
+      if (typeof pdob === 'string') return parseInt(pdob.slice(0, 4), 10);
       return profile.partner_date_of_birth_year ?? undefined;
+    }
     case 'partner_income':
       return profile.partner_income ?? undefined;
     case 'partner_super_balance':
@@ -207,6 +258,8 @@ export function resolveProfileField(profile: ProfileData, field: string): unknow
       return profile.partner_super_fund_name ?? undefined;
     case 'partner_intended_retirement_age':
       return profile.partner_intended_retirement_age ?? undefined;
+    case 'partner_intended_retirement_month':
+      return profile.partner_intended_retirement_month ?? undefined;
     case 'partner_is_default_investment': {
       const pv = profile.partner_is_default_investment;
       if (typeof pv === 'boolean') return pv;
@@ -265,13 +318,20 @@ function applyConditionalLogic(fields: string[], profile: ProfileData): string[]
   ]);
 
   const PARTNER_FIELDS = new Set([
-    'partner_date_of_birth_year', 'partner_income', 'partner_super_balance',
+    'partner_date_of_birth', 'partner_income', 'partner_super_balance',
     'partner_super_fund_name', 'partner_intended_retirement_age',
+    'partner_intended_retirement_month',
     'partner_is_default_investment', 'partner_super_investment_option',
     'dependants_count',
   ]);
 
-  return fields.filter((field) => {
+  const dateOfBirthInFields = fields.includes('date_of_birth');
+  const filtered = fields.filter((field) => {
+    if (field === 'date_of_birth') {
+      // #region agent log
+      fetch('http://127.0.0.1:7587/ingest/9194df1b-2a00-4be9-ae88-babf17f415a1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'40eead'},body:JSON.stringify({sessionId:'40eead',location:'scenario-builder.ts:applyConditionalLogic',message:'date_of_birth in filter',data:{dateOfBirthInFields,scope,hasProjectionScope},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
+      // #endregion
+    }
     // Skip default-investment question when the fund has no default/MySuper option
     if (field === 'is_default_investment') {
       if (profile._fund_has_default_option === false) return false;
@@ -336,6 +396,7 @@ function applyConditionalLogic(fields: string[], profile: ProfileData): string[]
 
     return true;
   });
+  return filtered;
 }
 
 // ── Retirement Expense Resolution ────────────────────────────────────────────
@@ -404,8 +465,6 @@ export type SurplusStrategyName = 'balanced' | 'aggressive_debt' | 'super_boost'
 
 const SURPLUS_PRESETS: Record<SurplusStrategyName, Record<string, unknown>[]> = {
   balanced: [
-    { type: 'emergency_buffer' },
-    { type: 'extra_debt_repayment', strategy: 'avalanche' },
     { type: 'remainder_to_cash' },
   ],
   aggressive_debt: [
@@ -434,29 +493,61 @@ function buildPersonData(
   overrides?: ScenarioOverrides,
 ) {
   const currentYear = new Date().getFullYear();
-  const dobYear = resolvedData.date_of_birth_year as number | undefined;
+  let dateOfBirth = resolvedData.date_of_birth as string | undefined;
+  if (!dateOfBirth && resolvedData.date_of_birth_year != null) {
+    const y = Number(resolvedData.date_of_birth_year);
+    if (!isNaN(y)) dateOfBirth = `${y}-01-01`;
+  }
+  if (!dateOfBirth) dateOfBirth = `${currentYear - 40}-01-01`;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth)) dateOfBirth = normalizeToIsoDate(dateOfBirth);
+  // Reject invalid dates (e.g. "40" from "I am 40") — use fallback to avoid engine crash
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth)) dateOfBirth = `${currentYear - 40}-01-01`;
+  const dobYear = parseInt(dateOfBirth.slice(0, 4), 10);
   const retirementAge =
     overrides?.retirement_age ??
     (resolvedData.intended_retirement_age as number | undefined) ??
     67;
-  const currentAge = dobYear ? currentYear - dobYear : 40;
+  const rawRetMonth = (overrides?.retirement_month as number | undefined) ?? resolvedData.intended_retirement_month;
+  const intendedRetirementMonth = rawRetMonth != null ? Number(rawRetMonth) : null;
+  const currentAge = currentYear - dobYear;
   const isHomeowner = resolvedData.is_homeowner === true;
   const hasHecs = resolvedData.has_hecs_help_debt === true;
 
   const person: Record<string, unknown> = {
     id: 'person_1',
     name: '',
-    date_of_birth_year: dobYear ?? currentYear - 40,
+    date_of_birth: dateOfBirth,
     gender: 'other',
     is_australian_resident: true,
     employment_status: mapEmploymentStatus(resolvedData.employment_type),
     intended_retirement_age: retirementAge,
+    intended_retirement_month: intendedRetirementMonth != null && !isNaN(intendedRetirementMonth) && intendedRetirementMonth >= 1 && intendedRetirementMonth <= 12 ? intendedRetirementMonth : null,
     has_hecs_help_debt: hasHecs,
     hecs_help_balance: hasHecs ? ((resolvedData.hecs_help_balance as number) ?? 0) : 0,
     is_homeowner: isHomeowner,
   };
 
   return { person, currentYear, dobYear, retirementAge, currentAge, isHomeowner, hasHecs };
+}
+
+function buildScheduledCashFlows(
+  retirementYear: number,
+  personId: string,
+  overrides?: ScenarioOverrides,
+): Record<string, unknown>[] {
+  const flows: Record<string, unknown>[] = [];
+  const lumpSum = overrides?.lump_sum_withdrawal;
+  if (typeof lumpSum === 'number' && lumpSum > 0) {
+    flows.push({
+      year: retirementYear + 1,
+      amount: lumpSum,
+      description: 'Lump sum withdrawal from super',
+      person_id: personId,
+      is_taxable: false,
+      source: 'super',
+    });
+  }
+  return flows;
 }
 
 function buildIncomeStreams(
@@ -593,13 +684,19 @@ export function buildScenarioFromProfile(
   const relationship = resolvedData.relationship_status as string | undefined;
   const isPartnered = ['partnered', 'married'].includes(relationship ?? '');
 
+  let scenario: Record<string, unknown>;
   if (scope === 'full_model' && isPartnered) {
-    return buildCoupleScenario(resolvedData, overrides, scenarioName);
+    scenario = buildCoupleScenario(resolvedData, overrides, scenarioName);
+  } else if (scope === 'full_model') {
+    scenario = buildFullSingleScenario(resolvedData, overrides, scenarioName);
+  } else {
+    scenario = buildSuperOnlyScenario(resolvedData, overrides, scenarioName);
   }
-  if (scope === 'full_model') {
-    return buildFullSingleScenario(resolvedData, overrides, scenarioName);
-  }
-  return buildSuperOnlyScenario(resolvedData, overrides, scenarioName);
+  // #region agent log
+  const sched = scenario.scheduled_cash_flows as unknown[] | undefined;
+  fetch('http://127.0.0.1:7587/ingest/9194df1b-2a00-4be9-ae88-babf17f415a1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'40eead'},body:JSON.stringify({sessionId:'40eead',location:'scenario-builder.ts:buildScenarioFromProfile',message:'scenario scheduled_cash_flows',data:{scheduled_cash_flows:sched,count:sched?.length??0,lumpSumOverride:(overrides as Record<string,unknown>)?.lump_sum_withdrawal},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
+  // #endregion
+  return scenario;
 }
 
 /**
@@ -614,6 +711,7 @@ function buildSuperOnlyScenario(
   const { person, currentYear, dobYear, retirementAge, currentAge, isHomeowner } =
     buildPersonData(resolvedData, overrides);
   const projectionYears = overrides?.projection_years ?? Math.max(90 - currentAge, 10);
+  const retirementYear = dobYear ? dobYear + retirementAge : currentYear + (retirementAge - currentAge);
 
   const household: Record<string, unknown> = {
     members: [person],
@@ -630,12 +728,14 @@ function buildSuperOnlyScenario(
       const retirementYear = dobYear
         ? dobYear + retirementAge
         : currentYear + (retirementAge - currentAge);
+      const retMonth = (person.intended_retirement_month as number | null) ?? (person.date_of_birth ? getBirthMonthFromDate(person.date_of_birth as string) : 1);
+      const retirementFY = getFinancialYear(retirementYear, retMonth);
       expenses.push({
         name: 'Retirement expenses',
         category: 'essential',
         annual_amount: retExpenseAmount,
         inflation_adjusted: true,
-        start_year: retirementYear,
+        start_year: retirementFY, // FY in which user turns retirement age; engine applies from July of prior year
       });
     }
   } else {
@@ -678,8 +778,9 @@ function buildSuperOnlyScenario(
     assets,
     super_funds: buildSuperFunds(resolvedData, overrides),
     liabilities: buildLiabilities(resolvedData, overrides),
-    scheduled_cash_flows: [],
+    scheduled_cash_flows: buildScheduledCashFlows(retirementYear, 'person_1', overrides),
     assumptions,
+    projection_scope: 'super_only',
   };
 }
 
@@ -696,6 +797,7 @@ function buildFullSingleScenario(
   const { person, currentYear, dobYear, retirementAge, currentAge } =
     buildPersonData(resolvedData, overrides);
   const projectionYears = overrides?.projection_years ?? Math.max(90 - currentAge, 10);
+  const retirementYear = dobYear ? dobYear + retirementAge : currentYear + (retirementAge - currentAge);
 
   const household: Record<string, unknown> = {
     members: [person],
@@ -717,30 +819,32 @@ function buildFullSingleScenario(
     });
   }
 
-  // Entry 2: Retirement expenses (with start_year — applies from retirement)
+  // Entry 2: Retirement expenses (with start_year — FY in which user turns retirement age)
   const retExpenseAmount = resolveRetirementExpenses(resolvedData);
   if (retExpenseAmount && retExpenseAmount > 0) {
     const retirementYear = dobYear
       ? dobYear + retirementAge
       : currentYear + (retirementAge - currentAge);
+    const retMonth = (person.intended_retirement_month as number | null) ?? (person.date_of_birth ? getBirthMonthFromDate(person.date_of_birth as string) : 1);
+    const retirementFY = getFinancialYear(retirementYear, retMonth);
     expenses.push({
       name: 'Retirement expenses',
       category: 'essential',
       annual_amount: retExpenseAmount,
       inflation_adjusted: true,
-      start_year: retirementYear,
+      start_year: retirementFY,
     });
   }
 
-  const strategyName = (resolvedData.surplus_allocation_strategy as SurplusStrategyName | undefined) ?? 'balanced';
-  const surplusRules = SURPLUS_PRESETS[strategyName] ?? SURPLUS_PRESETS.balanced;
+  const strategyName = resolvedData.surplus_allocation_strategy as SurplusStrategyName | undefined;
+  const useDefault = !strategyName || strategyName === 'balanced';
 
   const assumptions: Record<string, unknown> = {
     inflation_rate: overrides?.inflation_rate ?? 0.025,
     wage_growth_rate: overrides?.wage_growth_rate ?? 0.035,
   };
 
-  return {
+  const scenario: Record<string, unknown> = {
     name: scenarioName ?? 'Full model projection',
     start_year: currentYear,
     projection_years: projectionYears,
@@ -750,12 +854,15 @@ function buildFullSingleScenario(
     assets: buildNonSuperAssets(resolvedData),
     super_funds: buildSuperFunds(resolvedData, overrides),
     liabilities: buildLiabilities(resolvedData, overrides),
-    scheduled_cash_flows: [],
+    scheduled_cash_flows: buildScheduledCashFlows(retirementYear, 'person_1', overrides),
     assumptions,
-    allocation_rules: {
-      surplus_priority: surplusRules,
-    },
   };
+
+  if (!useDefault && SURPLUS_PRESETS[strategyName]) {
+    scenario.allocation_rules = { surplus_priority: SURPLUS_PRESETS[strategyName] };
+  }
+
+  return scenario;
 }
 
 /**
@@ -770,19 +877,29 @@ function buildCoupleScenario(
   const currentYear = new Date().getFullYear();
   const p1 = buildPersonData(resolvedData, overrides);
   const projectionYears = overrides?.projection_years ?? Math.max(90 - p1.currentAge, 10);
+  const retirementYear = p1.dobYear ? p1.dobYear + p1.retirementAge : currentYear + (p1.retirementAge - p1.currentAge);
 
   // Partner person
-  const partnerDobYear = resolvedData.partner_date_of_birth_year as number | undefined;
+  let partnerDob = resolvedData.partner_date_of_birth as string | undefined;
+  if (!partnerDob && resolvedData.partner_date_of_birth_year != null) {
+    const y = Number(resolvedData.partner_date_of_birth_year);
+    if (!isNaN(y)) partnerDob = `${y}-01-01`;
+  }
+  if (!partnerDob) partnerDob = `${currentYear - 40}-01-01`;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(partnerDob)) partnerDob = normalizeToIsoDate(partnerDob);
   const partnerRetAge = (resolvedData.partner_intended_retirement_age as number | undefined) ?? 67;
+  const rawPartnerRetMonth = resolvedData.partner_intended_retirement_month;
+  const partnerRetMonth = rawPartnerRetMonth != null ? Number(rawPartnerRetMonth) : null;
   const partnerHasHecs = false;
   const person2: Record<string, unknown> = {
     id: 'person_2',
     name: 'Partner',
-    date_of_birth_year: partnerDobYear ?? currentYear - 40,
+    date_of_birth: partnerDob,
     gender: 'other',
     is_australian_resident: true,
     employment_status: 'employed',
     intended_retirement_age: partnerRetAge,
+    intended_retirement_month: partnerRetMonth != null && !isNaN(partnerRetMonth) && partnerRetMonth >= 1 && partnerRetMonth <= 12 ? partnerRetMonth : null,
     has_hecs_help_debt: partnerHasHecs,
     hecs_help_balance: 0,
     is_homeowner: p1.isHomeowner,
@@ -850,14 +967,18 @@ function buildCoupleScenario(
     const p2RetYear = partnerDobYear
       ? partnerDobYear + partnerRetAge
       : currentYear + (partnerRetAge - (partnerDobYear ? currentYear - partnerDobYear : 40));
+    const p1RetMonth = (p1.intended_retirement_month as number | null) ?? (p1.date_of_birth ? getBirthMonthFromDate(p1.date_of_birth as string) : 1);
+    const p2RetMonth = partnerRetMonth ?? (partnerDob ? getBirthMonthFromDate(partnerDob) : 1);
     const retirementYear = Math.min(p1RetYear, p2RetYear);
+    const retirementMonth = p1RetYear < p2RetYear ? p1RetMonth : (p2RetYear < p1RetYear ? p2RetMonth : Math.min(p1RetMonth, p2RetMonth));
+    const retirementFY = getFinancialYear(retirementYear, retirementMonth);
 
     expenses.push({
       name: 'Retirement expenses',
       category: 'essential',
       annual_amount: retExpenseAmount,
       inflation_adjusted: true,
-      start_year: retirementYear,
+      start_year: retirementFY,
     });
   }
 
@@ -893,15 +1014,15 @@ function buildCoupleScenario(
     });
   }
 
-  const strategyName = (resolvedData.surplus_allocation_strategy as SurplusStrategyName | undefined) ?? 'balanced';
-  const surplusRules = SURPLUS_PRESETS[strategyName] ?? SURPLUS_PRESETS.balanced;
+  const strategyName = resolvedData.surplus_allocation_strategy as SurplusStrategyName | undefined;
+  const useDefault = !strategyName || strategyName === 'balanced';
 
   const assumptions: Record<string, unknown> = {
     inflation_rate: overrides?.inflation_rate ?? 0.025,
     wage_growth_rate: overrides?.wage_growth_rate ?? 0.035,
   };
 
-  return {
+  const scenario: Record<string, unknown> = {
     name: scenarioName ?? 'Couple projection',
     start_year: currentYear,
     projection_years: projectionYears,
@@ -911,10 +1032,13 @@ function buildCoupleScenario(
     assets,
     super_funds: superFunds,
     liabilities: buildLiabilities(resolvedData, overrides),
-    scheduled_cash_flows: [],
+    scheduled_cash_flows: buildScheduledCashFlows(retirementYear, 'person_1', overrides),
     assumptions,
-    allocation_rules: {
-      surplus_priority: surplusRules,
-    },
   };
+
+  if (!useDefault && SURPLUS_PRESETS[strategyName]) {
+    scenario.allocation_rules = { surplus_priority: SURPLUS_PRESETS[strategyName] };
+  }
+
+  return scenario;
 }

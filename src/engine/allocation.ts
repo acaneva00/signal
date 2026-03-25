@@ -59,16 +59,23 @@ export interface DeficitResult {
 // ── Default Rules ────────────────────────────────────────────────────────────
 
 export const DEFAULT_SURPLUS_RULES: SurplusRule[] = [
-  { type: 'emergency_buffer' },
-  { type: 'extra_debt_repayment', strategy: 'avalanche' },
   { type: 'remainder_to_cash' },
 ];
 
 export const DEFAULT_DRAWDOWN_RULES: DrawdownRule[] = [
   { type: 'cash' },
   { type: 'fixed_interest' },
+  { type: 'super' }, // before shares for tax efficiency (super pension tax-free 60+)
   { type: 'shares' },
+  { type: 'property' },
+];
+
+/** Super-only: cash first (preserve tax-free super compounding), then super. PRD 8.6.2. */
+export const SUPER_ONLY_DRAWDOWN_RULES: DrawdownRule[] = [
+  { type: 'cash' },
+  { type: 'fixed_interest' },
   { type: 'super' },
+  { type: 'shares' },
   { type: 'property' },
 ];
 
